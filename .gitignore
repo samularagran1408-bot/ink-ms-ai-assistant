@@ -1,0 +1,22 @@
+# Build
+target/
+*.jar
+*.war
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Credenciales
+.env
+application-local.yml
+application-dev.yml
+application-prod.yml
+*.secret
+*.key
