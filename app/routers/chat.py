@@ -1,46 +1,49 @@
-from fastapi import APIRouter, HTTPException, Header, Depends
 from typing import Optional
-from app.models.chat import ChatRequest, ChatResponse
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+
 from app.agents.chatbot_agent import ChatbotAgent
+from app.models.chat import ChatRequest, ChatResponse
 from app.services.auth_service import AuthService
 
 router = APIRouter()
 agent = ChatbotAgent()
 auth_service = AuthService()
 
+USUARIO_DEMO = {"id": "demo-user", "email": "demo@user.com", "roles": ["USUARIO"]}
+
+
 async def get_current_user(authorization: Optional[str] = Header(None)):
-    # 👇 IGNORAR HEADER VACÍO
+    """Resuelve el usuario del token; sin token válido se usa un perfil de demo."""
     if not authorization or not authorization.strip():
-        return {"id": "demo-user", "email": "demo@user.com", "roles": ["USUARIO"]}
-    
-    if not authorization.startswith("Bearer "):
-        return {"id": "demo-user", "email": "demo@user.com", "roles": ["USUARIO"]}
-    
-    token = authorization.replace("Bearer ", "").strip()
-    if not token:
-        return {"id": "demo-user", "email": "demo@user.com", "roles": ["USUARIO"]}
-    
-    user_data = await auth_service.validate_token(authorization)
-    return user_data or {"id": "demo-user", "email": "demo@user.com", "roles": ["USUARIO"]}
+        return USUARIO_DEMO
+    if not authorization.startswith("Bearer ") or not authorization[7:].strip():
+        return USUARIO_DEMO
+    return await auth_service.validate_token(authorization) or USUARIO_DEMO
+
 
 @router.post("/", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
-    user_data: dict = Depends(get_current_user)
+    user_data: dict = Depends(get_current_user),
+    authorization: Optional[str] = Header(None),
 ):
     try:
         usuario_id = request.usuario_id or user_data.get("id") or "demo-user"
-        
-        result = await agent.procesar_mensaje(
-            usuario_id,
-            request.mensaje,
-            request.disability_type
+        discapacidad = request.disability_type or user_data.get("disability")
+
+        resultado = await agent.procesar_mensaje(
+            usuario_id, request.mensaje, discapacidad, authorization
         )
         return ChatResponse(
             conversacion_id=request.conversacion_id or "nueva",
-            respuesta=result["respuesta"],
-            intencion=result["intencion"],
-            adaptada=result["adaptada"]
+            respuesta=resultado["respuesta"],
+            intencion=resultado["intencion"],
+            adaptada=resultado["adaptada"],
+            confianza=resultado.get("confianza", 0.0),
+            fuente=resultado.get("fuente", "motor_local"),
+            sugerencias=resultado.get("sugerencias") or [],
+            datos=resultado.get("datos"),
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Error procesando el mensaje: {exc}")

@@ -6,6 +6,10 @@ class QuizGenerarRequest(BaseModel):
     usuario_id: str
     num_preguntas: int = Field(default=8, ge=5, le=15)
     dificultad: str = Field(default="media", description="baja | media | alta")
+    semilla: Optional[int] = Field(
+        default=None,
+        description="Fija la selección de preguntas para obtener un quiz reproducible",
+    )
 
 
 class QuizRespuestaItem(BaseModel):
@@ -55,5 +59,6 @@ class QuizEvaluarResponse(BaseModel):
     aprobado: bool
     umbral_aprobacion: float
     detalle: List[Dict[str, Any]]
+    temas_a_reforzar: List[str] = Field(default_factory=list)
     score_registrado_en_users: bool
     siguiente_paso: str

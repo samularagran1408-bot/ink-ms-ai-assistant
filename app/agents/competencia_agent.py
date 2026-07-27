@@ -1,9 +1,26 @@
-from app.services.grok_service import GrokService
-from app.services.user_service import UserService
-from app.services.sports_service import SportsService
 import json
-import re
-import unicodedata
+from datetime import date, datetime
+
+from app.nlp.discapacidad import canonizar, coincide, descripcion
+from app.nlp.texto import normalizar
+from app.services.llm_service import LLMService
+from app.services.sports_service import SportsService
+from app.services.user_service import UserService
+
+
+def _fecha(valor) -> date | None:
+    """Interpreta la fecha de un evento, que sports entrega como ISO o lista."""
+    if isinstance(valor, str):
+        try:
+            return datetime.fromisoformat(valor[:10]).date()
+        except ValueError:
+            return None
+    if isinstance(valor, (list, tuple)) and len(valor) >= 3:
+        try:
+            return date(int(valor[0]), int(valor[1]), int(valor[2]))
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 class CompetenciaAgent:
@@ -14,51 +31,20 @@ class CompetenciaAgent:
     """
 
     def __init__(self):
-        self.grok = GrokService()
+        self.llm = LLMService()
         self.user_service = UserService()
         self.sports_service = SportsService()
 
     def _normalizar(self, texto: str) -> str:
-        t = (texto or "").strip().lower()
-        t = "".join(
-            c for c in unicodedata.normalize("NFD", t)
-            if unicodedata.category(c) != "Mn"
-        )
-        return t
+        return normalizar(texto)
 
     def _discapacidad_coincide(self, discapacidad_usuario: str, *candidatos: str) -> bool:
-        u = self._normalizar(discapacidad_usuario)
-        if not u or u in ("general", "ninguna", "n/a"):
-            return True  # sin discapacidad específica → no filtrar por este criterio
+        return coincide(discapacidad_usuario, *candidatos)
 
-        # sinonimos cortos
-        aliases = {
-            "fisica": ["fisica", "fisico", "motriz", "movilidad", "silla"],
-            "visual": ["visual", "ciego", "ceguera", "vision"],
-            "auditiva": ["auditiva", "auditivo", "sordo", "audicion"],
-            "intelectual": ["intelectual", "cognitiva", "cognitivo"],
-            "multiple": ["multiple", "multidiscapacidad"],
-        }
-        for key, words in aliases.items():
-            if key in u or any(w in u for w in words):
-                u_tokens = set(words + [key, u])
-                break
-        else:
-            u_tokens = set(p for p in u.split() if len(p) > 2) | {u}
-
-        for cand in candidatos:
-            d = self._normalizar(cand)
-            if not d:
-                continue
-            if u in d or d in u:
-                return True
-            if any(tok in d for tok in u_tokens if len(tok) > 2):
-                return True
-        return False
-
-    async def _sport_ids_compatibles(self, discapacidad: str) -> tuple[set, dict]:
+    async def _sport_ids_compatibles(self, discapacidad: str) -> tuple[set, dict, list]:
         """
-        Devuelve sportIds compatibles con la discapacidad y mapa de adaptaciones.
+        Devuelve sportIds compatibles con la discapacidad, mapa de adaptaciones y
+        el catálogo completo de deportes activos.
         Usa GET /api/sports/active (disabilities anidadas) y /api/sport-disabilities/sport/{id}.
         """
         deportes = await self.sports_service.get_deportes_activos()
@@ -109,7 +95,130 @@ class CompetenciaAgent:
             if match:
                 compatibles.add(sid)
 
-        return compatibles, adaptaciones_por_sport
+        return compatibles, adaptaciones_por_sport, deportes
+
+    def _analisis_heuristico(
+        self,
+        discapacidad: str,
+        deportes_compatibles: list,
+        deportes_sin_adaptacion: list,
+        estadisticas: dict,
+        futuros: list,
+        con_cupo: list,
+        proximo: dict | None,
+        inscritos: list,
+        perfil: dict,
+    ) -> dict[str, list[str]]:
+        """Lectura del panorama competitivo a partir de los datos de users y sports.
+
+        Es la que se usa cuando no hay LLM disponible, así que tiene que sostenerse
+        por sí sola: cita deportes, eventos y cifras concretas en vez de generalidades.
+        """
+        etiqueta = descripcion(canonizar(discapacidad))
+        ventajas: list[str] = []
+        desventajas: list[str] = []
+        recomendaciones: list[str] = []
+
+        if deportes_compatibles:
+            ventajas.append(
+                f"Tienes {len(deportes_compatibles)} deporte(s) con adaptaciones registradas "
+                f"para {etiqueta}: {', '.join(deportes_compatibles)}."
+            )
+        if estadisticas["eventos_futuros_con_cupo"]:
+            ventajas.append(
+                f"Quedan {estadisticas['eventos_futuros_con_cupo']} evento(s) futuros con cupo "
+                f"libre y {estadisticas['cupos_disponibles']} plazas disponibles en total."
+            )
+        if proximo:
+            ventajas.append(
+                f"El más cercano es '{proximo['nombre']}' ({proximo.get('deporte')}) "
+                f"el {proximo.get('fecha')} en {proximo.get('ubicacion')}."
+            )
+        if estadisticas["ocupacion_media_pct"] < 50 and estadisticas["cupos_totales"]:
+            ventajas.append(
+                f"La ocupación media es del {estadisticas['ocupacion_media_pct']}%, así que "
+                "hay poca competencia por plaza y puedes elegir evento con calma."
+            )
+        if estadisticas["asistencias"]:
+            ventajas.append(
+                f"Ya acumulas {estadisticas['asistencias']} asistencia(s), que cuentan para "
+                "la verificación como organizador."
+            )
+
+        if not deportes_compatibles:
+            desventajas.append(
+                f"Ningún deporte del catálogo tiene adaptaciones registradas para {etiqueta}, "
+                "así que no puedo filtrar eventos por tu perfil. Un entrenador verificado "
+                "debe registrarlas en el catálogo de adaptaciones deporte-discapacidad."
+            )
+        if deportes_sin_adaptacion:
+            desventajas.append(
+                f"Quedan fuera de tu alcance {len(deportes_sin_adaptacion)} deporte(s) sin "
+                f"adaptación para tu perfil: {', '.join(deportes_sin_adaptacion)}."
+            )
+        if estadisticas["eventos_sin_adaptacion_para_el_perfil"]:
+            desventajas.append(
+                f"{estadisticas['eventos_sin_adaptacion_para_el_perfil']} de los "
+                f"{estadisticas['eventos_en_sistema']} eventos publicados no son compatibles "
+                "con tu discapacidad."
+            )
+        if not inscritos:
+            desventajas.append(
+                "No estás inscrito en ningún evento todavía, así que no tienes asistencias "
+                "que acrediten experiencia en la plataforma."
+            )
+        if futuros and not con_cupo:
+            desventajas.append(
+                "Todos los eventos compatibles que quedan están sin cupo: tendrías que "
+                "entrar en lista de espera."
+            )
+        if estadisticas["lista_espera"]:
+            desventajas.append(
+                f"Tienes {estadisticas['lista_espera']} inscripción(es) en lista de espera, "
+                "que no garantizan plaza."
+            )
+        if not perfil.get("disability"):
+            desventajas.append(
+                "Tu perfil no tiene discapacidad registrada, así que el análisis usa el "
+                "catálogo completo en lugar de filtrarlo para ti."
+            )
+
+        if proximo:
+            recomendaciones.append(
+                f"Inscríbete en '{proximo['nombre']}' antes del {proximo.get('fecha')}: "
+                f"quedan {proximo.get('availableCapacity')} cupos."
+            )
+            if proximo.get("adaptaciones"):
+                primera = proximo["adaptaciones"][0]
+                recomendaciones.append(
+                    f"Para ese evento el deporte tiene registrada esta adaptación: "
+                    f"{primera.get('adaptacion')}."
+                )
+        if len(deportes_compatibles) > 1:
+            recomendaciones.append(
+                f"Prueba más de una disciplina: {' y '.join(deportes_compatibles[:2])} "
+                "trabajan capacidades distintas y amplían tu calendario."
+            )
+        if not estadisticas["eventos_creados"] and estadisticas["asistencias"] >= 1:
+            recomendaciones.append(
+                "Ya tienes asistencias: el siguiente paso natural es el quiz de organizador "
+                "para poder crear tus propios eventos."
+            )
+        if not deportes_compatibles:
+            recomendaciones.append(
+                "Pide a un entrenador verificado que registre las adaptaciones de tu "
+                "discapacidad y después publica eventos con esos deportes."
+            )
+        recomendaciones.append(
+            f"Pídeme una rutina adaptada al deporte del evento que elijas para llegar "
+            f"preparado; la ajusto a {etiqueta}."
+        )
+
+        return {
+            "ventajas": ventajas or [f"Perfil con {etiqueta} registrado en la plataforma."],
+            "desventajas": desventajas or ["No se detectan barreras relevantes ahora mismo."],
+            "recomendaciones": recomendaciones,
+        }
 
     async def analizar_rendimiento(self, usuario_id: str):
         user_data = await self.user_service.get_user_profile(usuario_id)
@@ -118,7 +227,10 @@ class CompetenciaAgent:
         email = user_data.get("email")
 
         eventos_sistema = await self.sports_service.get_eventos()
-        sport_ids_ok, adaptaciones_por_sport = await self._sport_ids_compatibles(discapacidad)
+        sport_ids_ok, adaptaciones_por_sport, deportes = await self._sport_ids_compatibles(
+            discapacidad
+        )
+        nombres_deporte = {d.get("id"): d.get("name") for d in deportes}
 
         # Filtrar: evento → deporte → discapacidad del usuario
         eventos_filtrados = [
@@ -191,13 +303,41 @@ class CompetenciaAgent:
                 "lista_espera": (reg or {}).get("waitlistPosition"),
             })
 
+        hoy = date.today()
+        futuros = sorted(
+            (e for e in resumen_eventos if (_fecha(e["fecha"]) or hoy) >= hoy),
+            key=lambda e: _fecha(e["fecha"]) or hoy,
+        )
+        con_cupo = [e for e in futuros if (e.get("availableCapacity") or 0) > 0]
+        proximo = con_cupo[0] if con_cupo else (futuros[0] if futuros else None)
+
+        deportes_compatibles = sorted(
+            {nombres_deporte.get(sid) for sid in sport_ids_ok if nombres_deporte.get(sid)}
+        )
+        deportes_sin_adaptacion = sorted(
+            {
+                d.get("name")
+                for d in deportes
+                if d.get("id") not in sport_ids_ok and d.get("name")
+            }
+        )
+
         estadisticas = {
             "eventos_en_sistema": len(eventos_sistema),
             "eventos_compatibles_discapacidad": len(eventos_filtrados),
+            "eventos_sin_adaptacion_para_el_perfil": len(eventos_sistema) - len(eventos_filtrados),
             "eventos_activos_o_disponibles": len(eventos_activos),
+            "eventos_futuros_compatibles": len(futuros),
+            "eventos_futuros_con_cupo": len(con_cupo),
+            "deportes_en_catalogo": len(deportes),
             "deportes_compatibles": len(sport_ids_ok),
             "cupos_totales": cupos_totales,
             "cupos_disponibles": cupos_disponibles,
+            "ocupacion_media_pct": (
+                round(100 * (cupos_totales - cupos_disponibles) / cupos_totales, 1)
+                if cupos_totales
+                else 0.0
+            ),
             "inscripciones_usuario": len(inscritos),
             "confirmados": confirmados,
             "lista_espera": en_espera,
@@ -219,47 +359,26 @@ SOLO JSON:
 """
 
         ventajas, desventajas, recomendaciones = [], [], []
-        try:
-            respuesta = await self.grok.chat(prompt, discapacidad)
-            json_match = re.search(r"\{.*\}", respuesta, re.DOTALL)
-            if json_match:
-                data = json.loads(json_match.group())
-                if isinstance(data, dict):
-                    ventajas = data.get("ventajas") or []
-                    desventajas = data.get("desventajas") or []
-                    recomendaciones = data.get("recomendaciones") or []
-        except Exception as e:
-            print(f"Grok no disponible para competencia: {e}")
+        analisis = await self.llm.json_dict(prompt, canonizar(discapacidad))
+        if analisis:
+            ventajas = analisis.get("ventajas") or []
+            desventajas = analisis.get("desventajas") or []
+            recomendaciones = analisis.get("recomendaciones") or []
 
-        if not ventajas:
-            if resumen_eventos:
-                ventajas = [
-                    f"{len(resumen_eventos)} evento(s) con deporte adaptado a '{discapacidad}'",
-                    f"{len(sport_ids_ok)} deporte(s) compatibles en el catálogo",
-                ]
-            else:
-                ventajas = [f"Perfil con discapacidad '{discapacidad}' registrado"]
-
-        if not desventajas:
-            if not resumen_eventos:
-                desventajas = [
-                    f"No hay eventos cuyo deporte tenga adaptación registrada para '{discapacidad}'. "
-                    "Revisa /api/sport-disabilities y crea eventos con esos sportId."
-                ]
-            elif not inscritos:
-                desventajas = ["Aún no estás inscrito en los eventos compatibles"]
-
-        if not recomendaciones:
-            if resumen_eventos:
-                recomendaciones = [
-                    f"Considera el evento '{resumen_eventos[0]['nombre']}' ({resumen_eventos[0].get('deporte')})",
-                    "Revisa las adaptaciones listadas en cada evento antes de inscribirte",
-                ]
-            else:
-                recomendaciones = [
-                    "Pide a un entrenador que registre adaptaciones deporte-discapacidad en /api/sport-disabilities",
-                    "Luego crea eventos en /api/events con esos sportId",
-                ]
+        heuristico = self._analisis_heuristico(
+            discapacidad=discapacidad,
+            deportes_compatibles=deportes_compatibles,
+            deportes_sin_adaptacion=deportes_sin_adaptacion,
+            estadisticas=estadisticas,
+            futuros=futuros,
+            con_cupo=con_cupo,
+            proximo=proximo,
+            inscritos=inscritos,
+            perfil=user_data,
+        )
+        ventajas = ventajas or heuristico["ventajas"]
+        desventajas = desventajas or heuristico["desventajas"]
+        recomendaciones = recomendaciones or heuristico["recomendaciones"]
 
         return {
             "estadisticas": estadisticas,
@@ -267,8 +386,22 @@ SOLO JSON:
             "desventajas": desventajas,
             "recomendaciones": recomendaciones,
             "eventos": resumen_eventos,
+            "proximos_eventos": futuros[:5],
+            "deportes_compatibles": [
+                {
+                    "id": sid,
+                    "nombre": nombres_deporte.get(sid),
+                    "adaptaciones": [
+                        {"discapacidad": a.get("disabilityName"), "adaptacion": a.get("adaptations")}
+                        for a in adaptaciones_por_sport.get(sid, [])
+                    ],
+                }
+                for sid in sorted(sport_ids_ok, key=lambda s: str(s))
+            ],
+            "deportes_sin_adaptacion": deportes_sin_adaptacion,
             "filtro": {
                 "discapacidad_perfil": discapacidad,
+                "discapacidad_canonica": canonizar(discapacidad),
                 "sport_ids_compatibles": list(sport_ids_ok),
                 "criterio": "evento.sportId en deportes con adaptacion a la discapacidad del usuario",
             },
