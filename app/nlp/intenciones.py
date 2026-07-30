@@ -181,13 +181,25 @@ _DEFINICIONES = [
         prioridad=1.3,
     ),
     Intencion(
+        nombre="navegacion_voz",
+        descripcion="Navegar por la app con comandos de voz",
+        frases=(
+            "ir a inicio", "ir a eventos", "abrir calendario", "mi progreso",
+            "abrir perfil", "abrir accesibilidad", "comandos de voz",
+            "activar microfono",
+        ),
+        palabras=("voz", "microfono", "navegar", "comando", "comandos"),
+        prioridad=1.35,
+    ),
+    Intencion(
         nombre="accesibilidad",
         descripcion="Accesibilidad de instalaciones y de la app",
         frases=(
-            "es accesible", "lector de pantalla", "alto contraste", "lengua de señas",
+            "es accesible", "lector de pantalla", "alto contraste",
             "rampa de acceso", "silla de ruedas acceso", "subtitulos",
+            "comandos por voz",
         ),
-        palabras=("accesibilidad", "accesible", "rampa", "braille", "señas", "subtitulo", "contraste"),
+        palabras=("accesibilidad", "accesible", "rampa", "braille", "subtitulo", "contraste", "voz"),
         prioridad=1.3,
     ),
     Intencion(

@@ -199,21 +199,35 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
     "accesibilidad": {
         "respuestas": [
             "La accesibilidad se trabaja en dos frentes: la plataforma (contraste, "
-            "lectores de pantalla, texto alternativo y navegación por teclado) y los "
-            "eventos, donde la descripción indica accesos, apoyos disponibles y "
-            "adaptaciones del deporte.",
+            "lectores de pantalla, comandos por voz, texto alternativo y navegación "
+            "por teclado) y los eventos, donde la descripción indica accesos, apoyos "
+            "disponibles y adaptaciones del deporte.",
             "Cada evento describe sus condiciones de acceso, y la aplicación soporta "
-            "lectores de pantalla, alto contraste y navegación por teclado.",
+            "lectores de pantalla, alto contraste, voz y navegación por teclado. "
+            "En Accesibilidad puedes activar el micrófono y ajustar la interfaz.",
         ],
         "adaptaciones": {
             "visual": "La aplicación es compatible con lectores de pantalla y ofrece alto "
-                      "contraste. En los eventos, la descripción indica guías y apoyos "
-                      "disponibles; si falta información, puedes solicitarla al organizador.",
-            "auditiva": "Los contenidos priorizan texto e indicaciones visuales. En los "
-                        "eventos se registra si hay intérprete o señalización luminosa.",
+                      "contraste. También puedes usar comandos por voz desde el botón "
+                      "flotante de accesibilidad.",
+            "auditiva": "Los contenidos priorizan texto e indicaciones visuales. Puedes "
+                        "usar comandos por voz desde el botón flotante de accesibilidad.",
         },
-        "sugerencias": ["¿Quieres que revise la accesibilidad de los eventos disponibles?"],
-        "accion": "eventos",
+        "sugerencias": ["¿Quieres que te explique los comandos de voz?"],
+        "accion": None,
+    },
+    "navegacion_voz": {
+        "respuestas": [
+            "Puedes navegar con voz desde el botón flotante de accesibilidad. "
+            "Di por ejemplo: ir al inicio, ir a eventos, abrir calendario, mi progreso, "
+            "perfil, accesibilidad o abrir asistente. También funciona «ayuda» y "
+            "«alto contraste».",
+        ],
+        "sugerencias": [
+            "Abre Accesibilidad para ver el glosario completo",
+            "Activa el micrófono del botón flotante",
+        ],
+        "accion": None,
     },
     "verificacion_entrenador": {
         "respuestas": [
