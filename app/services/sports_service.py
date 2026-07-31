@@ -87,3 +87,37 @@ class SportsService:
             default=[],
         )
         return data if isinstance(data, list) else []
+
+    async def get_rutinas_publicadas(self, authorization: Optional[str] = None) -> list[dict]:
+        data = await self._get_json("/api/routines", authorization, default=[])
+        return data if isinstance(data, list) else []
+
+    async def get_rutinas_usuario(self, usuario_id: str, authorization: Optional[str] = None) -> list[dict]:
+        """Inscripciones del usuario a rutinas de entrenador."""
+        registros = await self._get_json(
+            f"/api/routine-registrations/user/{usuario_id}",
+            authorization,
+            default=[],
+        )
+        if not isinstance(registros, list):
+            return []
+
+        rutinas_por_id = {
+            r.get("id"): r for r in await self.get_rutinas_publicadas(authorization) if r.get("id")
+        }
+        # Incluir también rutinas del entrenador listadas por id si hace falta
+        enriquecidos = []
+        for reg in registros:
+            rid = reg.get("routineId")
+            rutina = rutinas_por_id.get(rid, {})
+            enriquecidos.append({
+                **reg,
+                "routineName": reg.get("routineName") or rutina.get("name"),
+                "sportId": rutina.get("sportId"),
+                "sportName": rutina.get("sportName"),
+                "level": rutina.get("level"),
+                "durationMinutes": rutina.get("durationMinutes"),
+                "disabilityFocus": rutina.get("disabilityFocus"),
+                "routineStatus": rutina.get("status"),
+            })
+        return enriquecidos

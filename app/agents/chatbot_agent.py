@@ -1,14 +1,15 @@
-"""Agente conversacional del asistente.
+"""Agente conversacional profesional de InkluSport.
 
-Flujo: se clasifica la intención del mensaje con el motor local, se redacta la
-respuesta desde la base de conocimiento y, cuando la intención lo requiere, se
-enriquece con datos reales de ink-ms-sports (eventos, deportes, adaptaciones) o
-con el motor de rutinas. El LLM solo entra en juego para mensajes que el motor
-local no sabe clasificar, y su ausencia nunca deja al usuario sin respuesta útil.
+Orquesta: clasificación local de intenciones → herramientas (eventos, rutinas,
+deportes, adaptaciones, quices) → síntesis con LLM + historial cuando está
+disponible. Sin LLM el motor local sigue respondiendo completo.
 """
 
+from __future__ import annotations
+
+import uuid
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
 from app.data.quiz_banco import BANCOS
@@ -17,17 +18,13 @@ from app.database.repositorio import COL_CONVERSACIONES, obtener_catalogo_ejerci
 from app.motor.rutinas import generar_rutina
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, system_prompt
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
 
-# Rotación de redacciones por usuario e intención, para no repetir la misma
-# frase en mensajes consecutivos.
 _ROTACION: dict[tuple[str, str], int] = {}
-
-# Por debajo del umbral de clasificación pero suficiente para responder sobre el
-# tema en lugar de admitir que no se entendió nada.
 UMBRAL_CANDIDATO = 0.18
+HISTORIAL_MAX = 8
 
 
 class ChatbotAgent:
@@ -44,31 +41,89 @@ class ChatbotAgent:
         mensaje: str,
         discapacidad: Optional[str] = None,
         authorization: Optional[str] = None,
+        conversacion_id: Optional[str] = None,
     ) -> dict[str, Any]:
+        conversacion_id = conversacion_id or str(uuid.uuid4())
         clave_discapacidad = canonizar(discapacidad)
+        historial = await self._cargar_historial(usuario_id, conversacion_id)
         clasificacion = clasificar(mensaje)
         intencion = clasificacion["nombre"]
 
         if intencion:
             resultado = await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje
             )
         else:
             resultado = await self._responder_desconocido(
-                usuario_id, mensaje, clave_discapacidad, clasificacion, authorization
+                usuario_id, mensaje, clave_discapacidad, clasificacion, authorization, historial
             )
+
+        resultado = await self._sintetizar_como_agente(
+            mensaje, resultado, clave_discapacidad, historial
+        )
 
         resultado["intencion"] = resultado.get("intencion") or intencion or "no_entendido"
         resultado["confianza"] = clasificacion["confianza"]
         resultado["terminos_detectados"] = clasificacion["terminos"]
+        resultado["conversacion_id"] = conversacion_id
+        resultado["agente"] = "inklusport-profesional"
 
-        await self._guardar_conversacion(usuario_id, mensaje, resultado)
+        await self._guardar_conversacion(usuario_id, conversacion_id, mensaje, resultado)
         return resultado
+
+    async def procesar_mensaje_stream(
+        self,
+        usuario_id: str,
+        mensaje: str,
+        discapacidad: Optional[str] = None,
+        authorization: Optional[str] = None,
+        conversacion_id: Optional[str] = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Emite fases del agente (SSE) y cierra con la respuesta final."""
+        yield {"evento": "estado", "detalle": "analizando_intencion"}
+        conversacion_id = conversacion_id or str(uuid.uuid4())
+        clave_discapacidad = canonizar(discapacidad)
+        historial = await self._cargar_historial(usuario_id, conversacion_id)
+        clasificacion = clasificar(mensaje)
+        intencion = clasificacion["nombre"]
+
+        if intencion:
+            yield {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
+            resultado = await self._responder_conocido(
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+            )
+            yield {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
+        else:
+            yield {"evento": "estado", "detalle": "consultando_conocimiento"}
+            resultado = await self._responder_desconocido(
+                usuario_id, mensaje, clave_discapacidad, clasificacion, authorization, historial
+            )
+
+        if self.llm.disponible:
+            yield {"evento": "estado", "detalle": "redactando_respuesta"}
+        resultado = await self._sintetizar_como_agente(
+            mensaje, resultado, clave_discapacidad, historial
+        )
+
+        resultado["intencion"] = resultado.get("intencion") or intencion or "no_entendido"
+        resultado["confianza"] = clasificacion["confianza"]
+        resultado["terminos_detectados"] = clasificacion["terminos"]
+        resultado["conversacion_id"] = conversacion_id
+        resultado["agente"] = "inklusport-profesional"
+
+        await self._guardar_conversacion(usuario_id, conversacion_id, mensaje, resultado)
+        yield {"evento": "respuesta", "datos": resultado}
+        yield {"evento": "fin", "conversacion_id": conversacion_id}
 
     # ---------------------------------------------------------------- redacción
 
     async def _responder_conocido(
-        self, usuario_id: str, intencion: str, discapacidad: str, authorization: Optional[str]
+        self,
+        usuario_id: str,
+        intencion: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
     ) -> dict[str, Any]:
         conocimiento = await obtener_conocimiento(intencion) or {}
         adaptaciones = conocimiento.get("adaptaciones") or {}
@@ -84,7 +139,7 @@ class ChatbotAgent:
         accion = conocimiento.get("accion")
         if accion:
             complemento, datos = await self._enriquecer(
-                accion, usuario_id, discapacidad, authorization
+                accion, usuario_id, discapacidad, authorization, mensaje
             )
             if complemento:
                 texto = f"{texto}\n\n{complemento}"
@@ -96,6 +151,7 @@ class ChatbotAgent:
             "sugerencias": conocimiento.get("sugerencias") or [],
             "datos": datos or None,
             "fuente": "motor_local",
+            "herramientas_usadas": [accion] if accion else [],
         }
 
     async def _responder_desconocido(
@@ -105,25 +161,25 @@ class ChatbotAgent:
         discapacidad: str,
         clasificacion: dict[str, Any],
         authorization: Optional[str],
+        historial: list[dict[str, str]],
     ) -> dict[str, Any]:
-        """Responde lo que el motor local no supo clasificar.
-
-        Se intenta en tres niveles: el LLM con el catálogo real como contexto, la
-        mejor intención candidata aunque no llegara al umbral, y por último el
-        mensaje de no entendido.
-        """
         contexto = await self._contexto_plataforma(authorization)
-        prompt = (
-            f"El usuario del asistente de InkluSport pregunta: «{mensaje}»\n\n"
-            f"Datos reales de la plataforma ahora mismo:\n{contexto}\n\n"
-            "Responde en un máximo de 4 frases. Si la pregunta es sobre deporte, "
-            "entrenamiento, salud, eventos o accesibilidad, respóndela apoyándote en "
-            "esos datos reales y no inventes eventos ni deportes que no estén en la "
-            "lista. Si es una pregunta general ajena a la plataforma, contéstala igual "
-            "de forma breve y correcta, y después ofrece ayuda con entrenamiento o "
-            "eventos. No dejes nunca al usuario sin respuesta."
-        )
-        texto = await self.llm.texto(prompt, discapacidad)
+        mensajes = [
+            {"role": "system", "content": system_prompt(discapacidad)},
+            *historial,
+            {
+                "role": "user",
+                "content": (
+                    f"Pregunta del usuario: «{mensaje}»\n\n"
+                    f"Datos reales de la plataforma ahora mismo:\n{contexto}\n\n"
+                    "Responde en un máximo de 5 frases. Si la pregunta es sobre deporte, "
+                    "entrenamiento, salud, eventos o accesibilidad, apóyate en esos datos "
+                    "y no inventes eventos ni deportes. Si es general, contéstala breve y "
+                    "correcta, y ofrece ayuda con entrenamiento o eventos."
+                ),
+            },
+        ]
+        texto = await self.llm.texto_mensajes(mensajes)
         if texto:
             return {
                 "respuesta": texto,
@@ -134,15 +190,14 @@ class ChatbotAgent:
                     "Puedo mostrarte los eventos compatibles con tu perfil",
                 ],
                 "datos": {"contexto_usado": True},
-                "fuente": "llm",
+                "fuente": "agente",
+                "herramientas_usadas": ["catalogo_plataforma"],
             }
 
-        # Sin LLM: si el clasificador tenía un candidato razonable, es mejor
-        # responder sobre ese tema que decir que no se ha entendido nada.
         candidato = clasificacion.get("mejor_candidato")
         if candidato and clasificacion["confianza"] >= UMBRAL_CANDIDATO:
             resultado = await self._responder_conocido(
-                usuario_id, candidato, discapacidad, authorization
+                usuario_id, candidato, discapacidad, authorization, mensaje
             )
             resultado["respuesta"] = (
                 f"Entiendo que tu pregunta va por aquí; si no es esto, dímelo con otras "
@@ -163,10 +218,53 @@ class ChatbotAgent:
             ],
             "datos": None,
             "fuente": "motor_local",
+            "herramientas_usadas": [],
         }
 
+    async def _sintetizar_como_agente(
+        self,
+        mensaje: str,
+        resultado: dict[str, Any],
+        discapacidad: str,
+        historial: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        """Pule la respuesta del motor local como un agente profesional con historial."""
+        if resultado.get("fuente") == "agente":
+            return resultado
+        if not self.llm.disponible:
+            return resultado
+
+        borrador = resultado.get("respuesta") or ""
+        datos = resultado.get("datos")
+        herramientas = resultado.get("herramientas_usadas") or []
+        mensajes = [
+            {"role": "system", "content": system_prompt(discapacidad)},
+            *historial,
+            {
+                "role": "user",
+                "content": (
+                    f"Mensaje del usuario: «{mensaje}»\n"
+                    f"Intención detectada: {resultado.get('intencion')}\n"
+                    f"Herramientas usadas: {', '.join(herramientas) or 'ninguna'}\n"
+                    f"Datos estructurados: {datos}\n\n"
+                    f"Borrador del motor local:\n{borrador}\n\n"
+                    "Reescribe la respuesta como agente profesional de InkluSport: natural, "
+                    "concreta y útil. Conserva todos los hechos del borrador y de los datos "
+                    "(nombres, fechas, cupos). Máximo 6 frases. No inventes nada nuevo."
+                ),
+            },
+        ]
+        pulido = await self.llm.texto_mensajes(mensajes, temperatura=0.5)
+        if not pulido:
+            return resultado
+
+        resultado = dict(resultado)
+        resultado["respuesta"] = pulido
+        resultado["fuente"] = "agente"
+        resultado["borrador_motor"] = borrador
+        return resultado
+
     async def _contexto_plataforma(self, authorization: Optional[str]) -> str:
-        """Resumen corto del catálogo real, para que el LLM no invente datos."""
         try:
             deportes = await self.sports_service.get_deportes_activos(authorization)
             eventos = await self.sports_service.get_eventos_activos(authorization)
@@ -202,7 +300,12 @@ class ChatbotAgent:
     # -------------------------------------------------------------- enriquecido
 
     async def _enriquecer(
-        self, accion: str, usuario_id: str, discapacidad: str, authorization: Optional[str]
+        self,
+        accion: str,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
     ) -> tuple[str, dict[str, Any]]:
         acciones = {
             "eventos": self._datos_eventos,
@@ -217,6 +320,8 @@ class ChatbotAgent:
         if not manejador:
             return "", {}
         try:
+            if accion in ("rutina", "ejercicios"):
+                return await manejador(usuario_id, discapacidad, authorization, mensaje)
             return await manejador(usuario_id, discapacidad, authorization)
         except Exception as exc:
             print(f"No se pudo enriquecer la respuesta ({accion}): {exc}")
@@ -359,39 +464,61 @@ class ChatbotAgent:
         return "\n".join(lineas), {"adaptaciones": encontradas[:5]}
 
     async def _datos_rutina(
-        self, usuario_id: str, discapacidad: str, authorization: Optional[str]
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
     ) -> tuple[str, dict[str, Any]]:
         catalogo = await obtener_catalogo_ejercicios()
         rutina = generar_rutina(
             discapacidad=discapacidad,
-            objetivo_texto="general",
+            objetivo_texto=mensaje or "general",
+            tipo_texto=mensaje or "",
             duracion_minutos=30,
             catalogo=catalogo,
         )
-        lineas = [f"Propuesta de hoy ({rutina['duracion_estimada_minutos']} min aprox.):"]
+        lineas = [
+            f"Propuesta de hoy · {rutina['objetivo']} "
+            f"({rutina['duracion_estimada_minutos']} min aprox.):"
+        ]
         for bloque in rutina["bloques"]:
             nombres = ", ".join(e["nombre"] for e in bloque["ejercicios"])
             lineas.append(f"- {bloque['bloque']}: {nombres}")
+        if rutina.get("recomendaciones"):
+            lineas.append(rutina["recomendaciones"][0])
         lineas.append(
-            "Dime tu objetivo (fuerza, resistencia, movilidad o equilibrio) y te la ajusto."
+            "Si quieres un plan de varias semanas, pide un plan de entrenamiento."
         )
         return "\n".join(lineas), {
             "rutina_sugerida": {
                 "nombre": rutina["nombre"],
+                "objetivo": rutina["objetivo"],
+                "objetivo_clave": rutina.get("objetivo_clave"),
+                "nivel": rutina["nivel"],
                 "duracion_estimada_minutos": rutina["duracion_estimada_minutos"],
+                "total_ejercicios": rutina["total_ejercicios"],
                 "bloques": [
                     {"bloque": b["bloque"], "ejercicios": [e["nombre"] for e in b["ejercicios"]]}
                     for b in rutina["bloques"]
                 ],
+                "recomendaciones": rutina.get("recomendaciones") or [],
             }
         }
 
     async def _datos_ejercicios(
-        self, usuario_id: str, discapacidad: str, authorization: Optional[str]
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
     ) -> tuple[str, dict[str, Any]]:
         catalogo = await obtener_catalogo_ejercicios()
         rutina = generar_rutina(
-            discapacidad=discapacidad, objetivo_texto="general", duracion_minutos=25,
+            discapacidad=discapacidad,
+            objetivo_texto=mensaje or "general",
+            tipo_texto=mensaje or "",
+            duracion_minutos=25,
             catalogo=catalogo,
         )
         seleccion = rutina["ejercicios"][:4]
@@ -420,8 +547,41 @@ class ChatbotAgent:
 
     # ------------------------------------------------------------ persistencia
 
+    async def _cargar_historial(
+        self, usuario_id: str, conversacion_id: str
+    ) -> list[dict[str, str]]:
+        db = get_db()
+        if db is None:
+            return []
+        try:
+            doc = await db[COL_CONVERSACIONES].find_one(
+                {"usuario_id": usuario_id, "conversacion_id": conversacion_id}
+            )
+            if not doc:
+                doc = await db[COL_CONVERSACIONES].find_one(
+                    {"usuario_id": usuario_id, "estado": "activa"},
+                    sort=[("ultima_interaccion", -1)],
+                )
+            if not doc:
+                return []
+            mensajes = doc.get("mensajes") or []
+            historial: list[dict[str, str]] = []
+            for m in mensajes[-HISTORIAL_MAX * 2 :]:
+                rol = "assistant" if m.get("remitente") == "asistente" else "user"
+                texto = (m.get("mensaje") or "").strip()
+                if texto:
+                    historial.append({"role": rol, "content": texto})
+            return historial[-HISTORIAL_MAX * 2 :]
+        except Exception as exc:
+            print(f"Error cargando historial: {exc}")
+            return []
+
     async def _guardar_conversacion(
-        self, usuario_id: str, mensaje: str, resultado: dict[str, Any]
+        self,
+        usuario_id: str,
+        conversacion_id: str,
+        mensaje: str,
+        resultado: dict[str, Any],
     ) -> None:
         db = get_db()
         if db is None:
@@ -429,7 +589,7 @@ class ChatbotAgent:
         ahora = datetime.now(timezone.utc)
         try:
             await db[COL_CONVERSACIONES].update_one(
-                {"usuario_id": usuario_id, "estado": "activa"},
+                {"usuario_id": usuario_id, "conversacion_id": conversacion_id},
                 {
                     "$push": {"mensajes": {"$each": [
                         {"mensaje": mensaje, "remitente": "usuario", "fecha": ahora},
@@ -441,7 +601,11 @@ class ChatbotAgent:
                             "fecha": ahora,
                         },
                     ]}},
-                    "$set": {"ultima_interaccion": ahora},
+                    "$set": {
+                        "ultima_interaccion": ahora,
+                        "estado": "activa",
+                        "agente": resultado.get("agente"),
+                    },
                     "$setOnInsert": {"creada_en": ahora},
                 },
                 upsert=True,

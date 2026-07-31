@@ -29,8 +29,9 @@ class RutinasAgent:
         duracion_minutos: int = 35,
         semilla: Optional[int] = None,
         authorization: Optional[str] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        perfil = await self.user_service.get_user_profile(usuario_id, authorization)
+        perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad_final = discapacidad or perfil.get("disability") or "general"
         nombre = perfil.get("fullName") or "Usuario"
 

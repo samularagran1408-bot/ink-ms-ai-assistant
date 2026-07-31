@@ -197,6 +197,21 @@ class LLMService:
         temperatura: float = 0.7,
     ) -> str:
         """Consulta al proveedor. Lanza excepción si no está disponible o falla."""
+        return await self.chat_mensajes(
+            [
+                {"role": "system", "content": system_prompt(disability_type, sistema_extra)},
+                {"role": "user", "content": prompt},
+            ],
+            temperatura=temperatura,
+        )
+
+    async def chat_mensajes(
+        self,
+        mensajes: list[dict[str, str]],
+        temperatura: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Consulta al LLM con una lista completa de mensajes (historial + system)."""
         if not self.habilitado:
             raise RuntimeError("LLM deshabilitado (LLM_ENABLED=false)")
         if self.requiere_clave and not self.api_key:
@@ -209,36 +224,13 @@ class LLMService:
                 f"LLM en pausa {restante}s tras un fallo previo: {LLMService._ultimo_error}"
             )
 
-        contexto = CONTEXTO_DISCAPACIDAD.get(
-            (disability_type or "general").lower(), CONTEXTO_DISCAPACIDAD["general"]
-        )
-        system_prompt = (
-            "Eres el asistente virtual de InkluSport, una plataforma de deporte inclusivo.\n"
-            f"El usuario tiene discapacidad: {disability_type}\n"
-            "Sé empático, claro y profesional. Responde siempre en español, sin usar "
-            "Markdown ni asteriscos. Si no sabes algo, dilo.\n"
-            f"Adaptación requerida: {contexto}"
-        )
-        if sistema_extra:
-            system_prompt = f"{system_prompt}\n{sistema_extra}"
-
         payload = {
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
+            "messages": mensajes,
             "model": self.model,
             "temperature": temperatura,
-            "max_tokens": settings.LLM_MAX_TOKENS,
+            "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
         }
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        if self.proveedor == "openrouter":
-            # OpenRouter atribuye el uso a la aplicación con estas cabeceras y
-            # aplica límites más laxos cuando vienen identificadas.
-            headers["HTTP-Referer"] = "https://inklusport.local"
-            headers["X-Title"] = "InkluSport"
+        headers = self._headers()
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -261,6 +253,15 @@ class LLMService:
         self._registrar_exito()
         return contenido
 
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.proveedor == "openrouter":
+            headers["HTTP-Referer"] = "https://inklusport.inklusport.uk"
+            headers["X-Title"] = "InkluSport AI Assistant"
+        return headers
+
     async def texto(
         self,
         prompt: str,
@@ -273,6 +274,21 @@ class LLMService:
             return None
         try:
             respuesta = await self.chat(prompt, disability_type, sistema_extra, temperatura)
+        except Exception as exc:
+            print(f"LLM no disponible: {exc}")
+            return None
+        return _limpiar(respuesta)
+
+    async def texto_mensajes(
+        self,
+        mensajes: list[dict[str, str]],
+        temperatura: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[str]:
+        if not self.disponible:
+            return None
+        try:
+            respuesta = await self.chat_mensajes(mensajes, temperatura, max_tokens)
         except Exception as exc:
             print(f"LLM no disponible: {exc}")
             return None
@@ -339,6 +355,30 @@ class LLMService:
             "ultimo_error": cls._ultimo_error,
             "modo": "llm+motor_local" if operativo else "motor_local",
         }
+
+
+def system_prompt(disability_type: str = "general", sistema_extra: str = "") -> str:
+    contexto = CONTEXTO_DISCAPACIDAD.get(
+        (disability_type or "general").lower(), CONTEXTO_DISCAPACIDAD["general"]
+    )
+    base = (
+        "Eres el agente profesional de InkluSport, la plataforma de deporte inclusivo "
+        "accesible en inklusport.inklusport.uk.\n"
+        "Tu rol: orientar a deportistas, entrenadores y organizadores sobre entrenamiento "
+        "adaptado, eventos, adaptaciones y verificación de aptitud.\n"
+        f"Perfil de discapacidad del usuario: {disability_type}.\n"
+        "Reglas:\n"
+        "- Responde siempre en español, claro, empático y profesional.\n"
+        "- No uses Markdown ni asteriscos (lectores de pantalla).\n"
+        "- No inventes eventos, deportes ni datos: usa solo la información que te den "
+        "las herramientas o el contexto de plataforma.\n"
+        "- Si falta información, dilo y ofrece el siguiente paso concreto.\n"
+        "- Mantén continuidad con el historial de la conversación.\n"
+        f"- Adaptación requerida: {contexto}"
+    )
+    if sistema_extra:
+        return f"{base}\n{sistema_extra}"
+    return base
 
 
 def _limpiar(texto: str) -> str:

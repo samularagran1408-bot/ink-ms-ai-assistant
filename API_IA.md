@@ -4,7 +4,9 @@ Microservicio de IA de InkluSport (FastAPI, Python 3.11).
 
 - Puerto: **3008**
 - Base URL directa: `http://localhost:3008`
-- Documentación interactiva: `http://localhost:3008/docs`
+- **Vía gateway (recomendado):** `http://localhost:8080/api/ai/...`
+- **Público:** `https://inklusport.inklusport.uk/api/ai/...`
+- Documentación interactiva (directo al servicio): `http://localhost:3008/docs`
 
 ## Idea principal: funciona con o sin LLM
 
@@ -119,7 +121,11 @@ publicados. Útil cuando la recomendación de eventos vuelve vacía.
 
 ---
 
-## 2. Chatbot
+## 2. Chatbot (agente profesional)
+
+El chat actúa como agente: clasifica la intención, ejecuta herramientas
+(eventos, rutinas, deportes, adaptaciones, quices), mantiene historial por
+`conversacion_id` y, si hay LLM, sintetiza una respuesta profesional.
 
 **POST** `/api/ai/chat/`
 
@@ -127,32 +133,38 @@ publicados. Útil cuando la recomendación de eventos vuelve vacía.
 {
   "mensaje": "¿Qué eventos hay disponibles?",
   "usuario_id": "e68b3227-a44d-472e-b5c5-2825fcfcc090",
-  "disability_type": "visual"
+  "disability_type": "visual",
+  "conversacion_id": "opcional-uuid-para-historial"
 }
 ```
 
 `disability_type` es opcional (`visual`, `auditiva`, `motriz`, `cognitiva`,
 `intelectual`, `multiple`). Si se omite, se toma del token o se asume perfil
-general.
+general. Reenvía `conversacion_id` en turnos siguientes para continuidad.
 
 Respuesta:
 
 ```json
 {
-  "conversacion_id": "nueva",
+  "conversacion_id": "a1b2c3d4-...",
   "respuesta": "Te reviso los eventos disponibles...\n\n- Encuentro de Natación Adaptada (Natación Adaptada) · 2026-08-14 · 5 cupos · con adaptaciones para tu perfil",
   "intencion": "eventos",
   "adaptada": false,
   "confianza": 0.824,
-  "fuente": "motor_local",
+  "fuente": "agente",
+  "agente": "inklusport-profesional",
+  "herramientas_usadas": ["eventos"],
   "sugerencias": ["Pregúntame cómo inscribirte en el que te interese"],
   "datos": { "eventos": [], "total": 9, "compatibles": 6 }
 }
 ```
 
+**POST** `/api/ai/chat/stream` — mismos campos; responde `text/event-stream`
+con eventos `estado`, `herramienta`, `respuesta` y `fin`.
+
 - `intencion`: intención detectada, o `no_entendido` si no se reconoce.
 - `confianza`: de 0 a 1. Por debajo de 0.34 se considera no reconocida.
-- `fuente`: `motor_local` o `llm`.
+- `fuente`: `motor_local`, `llm` o `agente` (síntesis profesional con LLM).
 - `datos`: datos reales consultados para responder (eventos, deportes,
   adaptaciones, ejercicios), cuando la intención los necesita.
 
@@ -365,6 +377,34 @@ evalúa una sola vez: para reintentar hay que generar uno nuevo.
 
 ---
 
+## RF41–RF55 (mapa rápido)
+
+| RF | Endpoint | Estado |
+|----|----------|--------|
+| RF41 Biomecánico | — | Omitido (visión artificial) |
+| RF42 Adaptar ejercicio | `POST /api/ai/ejercicios/adaptar` (+ `/rutinas/adaptar`) | OK |
+| RF43 Riesgo lesión | `POST /api/ai/riesgo/lesiones/{userId}` (+ `/riesgo/evaluar`) | OK |
+| RF44 Planes / rutinas IA | `POST /api/ai/planes/generar`, `/rutinas/generar` | OK |
+| RF45 Fatiga | `POST /api/ai/fatiga/rpe` | Parcial (RPE; `detectar` omitido) |
+| RF46 Voz | `POST /api/ai/voz/comando` | OK (+ accessibility) |
+| RF47 Dashboard | `GET /api/ai/dashboard/{userId}` | OK |
+| RF48 Progreso | `GET /api/ai/progreso/comparativa/{userId}` | OK |
+| RF49 Eventos | `GET /api/ai/recomendacion/eventos/{id}` | OK |
+| RF50/51 Deportes | `GET /api/ai/deportes/filtrar/{id}` | OK |
+| RF52 Detección | `POST /api/ai/deteccion/discapacidad` | OK (pide confirmación) |
+| RF53 Modo competencia | `POST /api/ai/competencia/modo/{userId}` (+ `/analizar`) | OK |
+| RF54 Wearables | — | Omitido |
+| RF55 Alertas entrenador | `POST /api/ai/alertas/{entrenadorId}` (+ `/alertas/entrenador`) | OK |
+
+### Quices → rutinas de entrenador (sports)
+
+1. `POST /api/ai/quiz/trainer/generar` y `/evaluar` (umbral ≥ 75; score en users).
+2. Entrenador crea draft: `POST /api/routines` (ink-ms-sports).
+3. Publicar: `POST /api/routines/{id}/publish` (exige `trainerQuizPassed`).
+4. Usuario se inscribe: `POST /api/routine-registrations`.
+
+Base Postman: `http://localhost:8080` o `https://inklusport.inklusport.uk`.
+
 ## Colecciones en MongoDB
 
 | Colección | Contenido |
@@ -374,6 +414,10 @@ evalúa una sola vez: para reintentar hay que generar uno nuevo.
 | `banco_preguntas_quiz` | Preguntas de organizador y entrenador |
 | `conversaciones_chatbot` | Historial de conversaciones |
 | `quizzes_verificacion` | Quices generados, con respuestas y resultado |
+| `planes_entrenamiento` | Planes multi-sesión (RF44) |
+| `sesiones_rpe` | Fatiga percibida (RF45) |
+| `alertas_entrenador` | Historial de alertas (RF55) |
+| `modo_competencia` | Estado del modo competencia (RF53) |
 
 Los catálogos se siembran al arrancar solo si faltan, así que puedes editarlos
 en MongoDB sin que el reinicio sobrescriba los cambios.

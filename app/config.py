@@ -49,6 +49,10 @@ class Settings:
     AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:3001")
     USERS_SERVICE_URL = os.getenv("USERS_SERVICE_URL", "http://localhost:3002")
     SPORTS_SERVICE_URL = os.getenv("SPORTS_SERVICE_URL", "http://localhost:3003")
+    ACCESSIBILITY_SERVICE_URL = os.getenv(
+        "ACCESSIBILITY_SERVICE_URL", "http://localhost:3004"
+    )
+    REPORTS_SERVICE_URL = os.getenv("REPORTS_SERVICE_URL", "http://localhost:3006")
 
     # LLM opcional. El servicio funciona completo sin él (motor local);
     # cuando está disponible se usa para enriquecer las respuestas.

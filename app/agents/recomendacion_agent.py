@@ -28,8 +28,9 @@ class RecomendacionAgent:
         usuario_id: str,
         limite: int = 3,
         authorization: Optional[str] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        perfil = await self.user_service.get_user_profile(usuario_id, authorization)
+        perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad_origen = perfil.get("disability") or "general"
         discapacidad = canonizar(discapacidad_origen)
         nombre = perfil.get("fullName") or "Usuario"

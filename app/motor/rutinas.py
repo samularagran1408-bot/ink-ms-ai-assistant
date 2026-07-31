@@ -202,23 +202,28 @@ def _formatear(ejercicio: dict, discapacidad: str) -> dict[str, Any]:
     perfiles que se fatigan antes o necesitan más tiempo entre instrucciones.
     """
     perfil = perfil_de(discapacidad)
-    series = max(1, ejercicio["series"] + perfil["series_delta"])
-    descanso = round(ejercicio["descanso"] * perfil["descanso_factor"])
+    series_base = int(ejercicio.get("series") or 2)
+    descanso_base = float(ejercicio.get("descanso") or 45)
+    series = max(1, series_base + int(perfil.get("series_delta") or 0))
+    descanso = round(descanso_base * float(perfil.get("descanso_factor") or 1.0))
+    material = ejercicio.get("material") or []
+    if isinstance(material, str):
+        material = [material]
     return {
-        "id": ejercicio["id"],
-        "nombre": ejercicio["nombre"],
-        "categoria": ejercicio["categoria"],
-        "fase": ejercicio["fase"],
-        "posicion": ejercicio["posicion"],
-        "nivel": ejercicio["nivel"],
-        "repeticiones": ejercicio["repeticiones"],
+        "id": ejercicio.get("id"),
+        "nombre": ejercicio.get("nombre") or "Ejercicio",
+        "categoria": ejercicio.get("categoria") or "general",
+        "fase": ejercicio.get("fase") or "principal",
+        "posicion": ejercicio.get("posicion") or "mixta",
+        "nivel": ejercicio.get("nivel") or "principiante",
+        "repeticiones": ejercicio.get("repeticiones") or "8-10",
         "series": series,
-        "tiempo_estimado": ejercicio["tiempo_estimado"],
+        "tiempo_estimado": int(ejercicio.get("tiempo_estimado") or 40),
         "descanso": descanso,
-        "esfuerzo": ejercicio["esfuerzo"],
-        "musculos": ejercicio["musculos"],
-        "material": ejercicio["material"],
-        "instrucciones": ejercicio["instrucciones"],
+        "esfuerzo": ejercicio.get("esfuerzo") or 2,
+        "musculos": ejercicio.get("musculos") or [],
+        "material": list(material),
+        "instrucciones": ejercicio.get("instrucciones") or "Ejecuta con control.",
         "adaptaciones": adaptacion_de(ejercicio, discapacidad),
         "seguridad": ejercicio.get("seguridad") or "",
     }
@@ -307,24 +312,37 @@ def generar_rutina(
 
     azar = random.Random(semilla)
 
+    # Descarta documentos incompletos (p. ej. catálogo Mongo antiguo).
+    ejercicios_disponibles = [
+        e for e in ejercicios_disponibles
+        if e.get("id") and e.get("nombre") and e.get("fase")
+    ]
+    if not ejercicios_disponibles:
+        ejercicios_disponibles = CATALOGO_EJERCICIOS
+
     compatibles = [e for e in ejercicios_disponibles if _apto_para(e, clave_discapacidad)]
     aptos = [
         e for e in compatibles
         if _apto_nivel(e, nivel_final) and _apto_posicion(e, posicion)
     ]
-    # Si la combinación deja el catálogo sin margen se relaja el nivel, nunca la
-    # posición ni la discapacidad: esas son restricciones de seguridad.
+    # Solo se relaja el nivel. Posición y discapacidad son seguridad.
     if len(aptos) < 6:
         aptos = [e for e in compatibles if _apto_posicion(e, posicion)]
-    if len(aptos) < 6:
-        aptos = compatibles
+    if len(aptos) < 3:
+        # Último recurso: catálogo en código, aún respetando posición/discapacidad.
+        respaldo = [e for e in CATALOGO_EJERCICIOS if _apto_para(e, clave_discapacidad)]
+        aptos = [e for e in respaldo if _apto_posicion(e, posicion)] or respaldo
 
     n_cal, n_prin, n_vuelta = _reparto(duracion_minutos)
     por_fase = {
-        "calentamiento": [e for e in aptos if e["fase"] == "calentamiento"],
-        "principal": [e for e in aptos if e["fase"] == "principal"],
-        "vuelta_a_la_calma": [e for e in aptos if e["fase"] == "vuelta_a_la_calma"],
+        "calentamiento": [e for e in aptos if e.get("fase") == "calentamiento"],
+        "principal": [e for e in aptos if e.get("fase") == "principal"],
+        "vuelta_a_la_calma": [e for e in aptos if e.get("fase") == "vuelta_a_la_calma"],
     }
+    # Si falta una fase, rellena desde el pool apto completo.
+    for fase, lista in list(por_fase.items()):
+        if not lista:
+            por_fase[fase] = list(aptos)
 
     seleccion = {
         fase: _seleccionar(

@@ -11,7 +11,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="visual | auditiva | motriz | cognitiva | intelectual | multiple",
     )
-    conversacion_id: Optional[str] = None
+    conversacion_id: Optional[str] = Field(
+        default=None,
+        description="Reutiliza el id para mantener historial entre turnos",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -21,8 +24,10 @@ class ChatResponse(BaseModel):
     adaptada: bool
     confianza: float = 0.0
     fuente: str = "motor_local"
+    agente: str = "inklusport-profesional"
     sugerencias: list[str] = Field(default_factory=list)
     datos: Optional[dict[str, Any]] = None
+    herramientas_usadas: list[str] = Field(default_factory=list)
 
 
 class Mensaje(BaseModel):

@@ -17,6 +17,12 @@ COL_CONOCIMIENTO = "conocimiento_chatbot"
 COL_QUIZ = "banco_preguntas_quiz"
 COL_CONVERSACIONES = "conversaciones_chatbot"
 COL_QUIZZES = "quizzes_verificacion"
+COL_PLANES = "planes_entrenamiento"
+COL_SESIONES_RPE = "sesiones_rpe"
+COL_ALERTAS = "alertas_entrenador"
+COL_MODO_COMPETENCIA = "modo_competencia"
+
+CAMPOS_EJERCICIO = ("id", "nombre", "fase", "series", "nivel", "posicion")
 
 
 async def _leer(coleccion: str, filtro: dict, limite: int = 500) -> list[dict[str, Any]]:
@@ -33,7 +39,14 @@ async def _leer(coleccion: str, filtro: dict, limite: int = 500) -> list[dict[st
 
 async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
     documentos = await _leer(COL_EJERCICIOS, {"activo": True})
-    return documentos or CATALOGO_EJERCICIOS
+    validos = [
+        d for d in documentos
+        if all(d.get(c) not in (None, "") for c in ("id", "nombre", "fase"))
+    ]
+    # Si Mongo tiene basura o catálogo a medias, usa el del código.
+    if len(validos) < 10:
+        return CATALOGO_EJERCICIOS
+    return validos
 
 
 async def obtener_conocimiento(intencion: str) -> Optional[dict[str, Any]]:

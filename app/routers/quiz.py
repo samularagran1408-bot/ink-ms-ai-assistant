@@ -1,28 +1,47 @@
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel, Field
 
 from app.agents.quiz_agent import QuizAgent
+from app.deps.contexto import resolver_contexto
 from app.models.quiz import (
     QuizEvaluarRequest,
     QuizEvaluarResponse,
     QuizGenerarRequest,
     QuizGenerarResponse,
+    QuizRespuestaItem,
 )
 
 router = APIRouter()
 agent = QuizAgent()
 
 
-async def _generar(rol: str, request: QuizGenerarRequest, authorization: Optional[str]):
+class QuizGenerarBody(BaseModel):
+    usuario_id: Optional[str] = None
+    num_preguntas: int = Field(default=8, ge=5, le=15)
+    dificultad: str = Field(default="media")
+    semilla: Optional[int] = None
+
+
+class QuizEvaluarBody(BaseModel):
+    usuario_id: Optional[str] = None
+    quiz_id: str
+    respuestas: list[QuizRespuestaItem]
+    registrar_en_users: bool = True
+
+
+async def _generar(rol: str, request: QuizGenerarBody, authorization: Optional[str]):
+    ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
+    # Cualquier usuario autenticado puede hacer el quiz de aptitud para ese rol
     try:
         return await agent.generar(
             rol,
-            request.usuario_id,
+            ctx.id,
             request.num_preguntas,
             request.dificultad,
             request.semilla,
-            authorization,
+            ctx.authorization,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -30,15 +49,16 @@ async def _generar(rol: str, request: QuizGenerarRequest, authorization: Optiona
         raise HTTPException(status_code=500, detail=f"Error generando el quiz: {exc}")
 
 
-async def _evaluar(rol: str, request: QuizEvaluarRequest, authorization: Optional[str]):
+async def _evaluar(rol: str, request: QuizEvaluarBody, authorization: Optional[str]):
+    ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
     try:
         return await agent.evaluar(
             rol,
-            request.usuario_id,
+            ctx.id,
             request.quiz_id,
             [r.model_dump() for r in request.respuestas],
             request.registrar_en_users,
-            authorization,
+            ctx.authorization,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -48,31 +68,27 @@ async def _evaluar(rol: str, request: QuizEvaluarRequest, authorization: Optiona
 
 @router.post("/organizer/generar", response_model=QuizGenerarResponse)
 async def generar_quiz_organizador(
-    request: QuizGenerarRequest, authorization: Optional[str] = Header(None)
+    request: QuizGenerarBody, authorization: Optional[str] = Header(None)
 ):
-    """Genera un quiz de aptitud para ORGANIZADOR (creación y gestión de eventos)."""
     return await _generar("ORGANIZADOR", request, authorization)
 
 
 @router.post("/trainer/generar", response_model=QuizGenerarResponse)
 async def generar_quiz_entrenador(
-    request: QuizGenerarRequest, authorization: Optional[str] = Header(None)
+    request: QuizGenerarBody, authorization: Optional[str] = Header(None)
 ):
-    """Genera un quiz de aptitud para ENTRENADOR (adaptaciones y planificación)."""
     return await _generar("ENTRENADOR", request, authorization)
 
 
 @router.post("/organizer/evaluar", response_model=QuizEvaluarResponse)
 async def evaluar_quiz_organizador(
-    request: QuizEvaluarRequest, authorization: Optional[str] = Header(None)
+    request: QuizEvaluarBody, authorization: Optional[str] = Header(None)
 ):
-    """Evalúa el quiz de organizador y registra el puntaje en ink-ms-users (umbral 70)."""
     return await _evaluar("ORGANIZADOR", request, authorization)
 
 
 @router.post("/trainer/evaluar", response_model=QuizEvaluarResponse)
 async def evaluar_quiz_entrenador(
-    request: QuizEvaluarRequest, authorization: Optional[str] = Header(None)
+    request: QuizEvaluarBody, authorization: Optional[str] = Header(None)
 ):
-    """Evalúa el quiz de entrenador y registra el puntaje en ink-ms-users (umbral 75)."""
     return await _evaluar("ENTRENADOR", request, authorization)

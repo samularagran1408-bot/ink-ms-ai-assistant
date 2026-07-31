@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from typing import Callable
 
 import httpx
 from fastapi import FastAPI
@@ -16,7 +17,24 @@ from app.database.mongodb import (
 )
 from app.database.semilla import sembrar_catalogos
 from app.nlp.intenciones import INTENCIONES
-from app.routers import chat, competencia, quiz, recomendacion, rutinas
+from app.routers import (
+    alertas,
+    chat,
+    competencia,
+    dashboard,
+    deportes,
+    deteccion,
+    ejercicios,
+    fatiga,
+    historial,
+    planes,
+    progreso,
+    quiz,
+    recomendacion,
+    riesgo,
+    rutinas,
+    voz,
+)
 from app.services.llm_service import LLMService
 
 
@@ -36,8 +54,6 @@ async def lifespan(app: FastAPI):
         f"modo={estado_llm['modo']}"
     )
 
-    # Se precalienta en segundo plano: cargar el modelo en RAM tarda, y bloquear
-    # el arranque dejaría el health check sin responder mientras tanto.
     calentamiento = asyncio.create_task(_precalentar_llm())
 
     yield
@@ -58,19 +74,36 @@ async def _precalentar_llm() -> None:
         print("El modelo no respondió; el asistente sigue operativo con el motor local")
 
 
-app = FastAPI(
+class _StripTrailingSlash:
+    """Evita 307 a http://ai-service:3008/... detrás del gateway (rompe Postman)."""
+
+    def __init__(self, app: Callable):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            path = scope.get("path") or ""
+            if len(path) > 1 and path.endswith("/"):
+                scope = {**scope, "path": path.rstrip("/") or "/"}
+        await self.app(scope, receive, send)
+
+    def __getattr__(self, name):
+        return getattr(self.app, name)
+
+
+_fastapi = FastAPI(
     title="InkluSport AI Assistant",
     description=(
-        "Agente de IA para deporte inclusivo: chat con detección de intenciones, "
-        "rutinas adaptadas, análisis de competencia, recomendación de eventos y "
-        "quices de aptitud para entrenadores y organizadores. Funciona con o sin "
-        "proveedor de LLM configurado."
+        "Agente profesional de InkluSport (RF41–RF55): chat, rutinas/planes, "
+        "recomendaciones, competencia, riesgo, métricas, alertas y voz. "
+        "Expone /api/ai/** vía gateway en inklusport.inklusport.uk."
     ),
-    version="2.0.0",
+    version="2.3.0",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
-app.add_middleware(
+_fastapi.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -78,23 +111,57 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat.router, prefix="/api/ai/chat", tags=["Chatbot"])
-app.include_router(rutinas.router, prefix="/api/ai/rutinas", tags=["Rutinas"])
-app.include_router(competencia.router, prefix="/api/ai/competencia", tags=["Competencia"])
-app.include_router(recomendacion.router, prefix="/api/ai/recomendacion", tags=["Recomendaciones"])
-app.include_router(quiz.router, prefix="/api/ai/quiz", tags=["Quices verificación"])
-# Alias sin /quiz, usado por algunas colecciones de Postman
-app.include_router(quiz.router, prefix="/api/ai", tags=["Quices (alias)"])
+_fastapi.include_router(chat.router, prefix="/api/ai/chat", tags=["Chatbot"])
+_fastapi.include_router(rutinas.router, prefix="/api/ai/rutinas", tags=["Rutinas RF42/RF44"])
+_fastapi.include_router(ejercicios.router, prefix="/api/ai/ejercicios", tags=["Ejercicios RF42"])
+_fastapi.include_router(planes.router, prefix="/api/ai/planes", tags=["Planes RF44"])
+_fastapi.include_router(competencia.router, prefix="/api/ai/competencia", tags=["Competencia RF53"])
+_fastapi.include_router(recomendacion.router, prefix="/api/ai/recomendacion", tags=["Eventos RF49"])
+_fastapi.include_router(deportes.router, prefix="/api/ai/deportes", tags=["Deportes RF50/RF51"])
+_fastapi.include_router(riesgo.router, prefix="/api/ai/riesgo", tags=["Riesgo RF43"])
+_fastapi.include_router(historial.router, prefix="/api/ai/historial", tags=["Historial RF47/RF48"])
+_fastapi.include_router(progreso.router, prefix="/api/ai/progreso", tags=["Progreso RF48"])
+_fastapi.include_router(dashboard.router, prefix="/api/ai/dashboard", tags=["Dashboard RF47"])
+_fastapi.include_router(alertas.router, prefix="/api/ai/alertas", tags=["Alertas RF55"])
+_fastapi.include_router(deteccion.router, prefix="/api/ai/deteccion", tags=["Detección RF52"])
+_fastapi.include_router(fatiga.router, prefix="/api/ai/fatiga", tags=["Fatiga RF45"])
+_fastapi.include_router(voz.router, prefix="/api/ai/voz", tags=["Voz RF46"])
+_fastapi.include_router(quiz.router, prefix="/api/ai/quiz", tags=["Quices verificación"])
+_fastapi.include_router(quiz.router, prefix="/api/ai", tags=["Quices (alias)"])
 
 
-@app.get("/api/ai/health")
+@_fastapi.get("/api/ai/health")
 async def health_check():
     mongo = estado_mongo()
     return {
         "status": "healthy",
         "service": "ink-ms-ai-assistant",
-        "version": "2.0.0",
-        "agents": ["chatbot", "rutinas", "competencia", "recomendacion", "quiz"],
+        "version": "2.3.0",
+        "auth": "Bearer JWT → GET /api/users/perfil (discapacidad y roles reales)",
+        "agents": [
+            "chatbot", "rutinas", "planes", "competencia", "recomendacion",
+            "deportes", "riesgo", "historial", "dashboard", "alertas",
+            "deteccion", "fatiga", "voz", "quiz",
+        ],
+        "rf_cubiertos": {
+            "RF41": "omitido (requiere visión artificial)",
+            "RF42": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar)",
+            "RF43": "POST /api/ai/riesgo/lesiones/{userId} (+ alias /riesgo/evaluar)",
+            "RF44": "POST /api/ai/rutinas/generar + POST /api/ai/planes/generar",
+            "RF45": "parcial POST /api/ai/fatiga/rpe (detectar omitido; sin sensores RT)",
+            "RF46": "POST /api/ai/voz/comando (+ accessibility)",
+            "RF47": "GET /api/ai/dashboard/{userId} (+ historial/metricas)",
+            "RF48": "GET /api/ai/progreso/comparativa/{userId} (+ historial/comparar)",
+            "RF49": "GET /api/ai/recomendacion/eventos/{id}",
+            "RF50": "GET /api/ai/deportes/filtrar/{id}",
+            "RF51": "GET /api/ai/deportes/filtrar/{id}",
+            "RF52": "POST /api/ai/deteccion/discapacidad",
+            "RF53": "POST /api/ai/competencia/modo/{userId} (+ analizar)",
+            "RF54": "omitido (wearables vendor)",
+            "RF55": "POST /api/ai/alertas/{entrenadorId} (+ /alertas/entrenador)",
+        },
+        "gateway_path": "/api/ai/**",
+        "public_base": "https://inklusport.inklusport.uk",
         "llm": LLMService.estado(),
         "mongodb": mongo,
         "motor_local": {
@@ -106,7 +173,7 @@ async def health_check():
     }
 
 
-@app.get("/api/ai/diagnostico")
+@_fastapi.get("/api/ai/diagnostico")
 async def diagnostico():
     """Comprueba las dependencias del servicio para localizar qué falta levantar."""
     llm = LLMService()
@@ -114,11 +181,10 @@ async def diagnostico():
 
     servicios = {
         "auth": f"{settings.AUTH_SERVICE_URL}/api/auth/validate",
-        # Ruta interna que este servicio realmente consume: sin el parámetro
-        # obligatorio devuelve 400, lo que ya confirma que la app responde.
-        # (/actuator/health no está expuesto en users y daba un 404 confuso.)
         "users": f"{settings.USERS_SERVICE_URL}/api/internal/users/roles-by-email",
         "sports": f"{settings.SPORTS_SERVICE_URL}/api/events",
+        "accessibility": f"{settings.ACCESSIBILITY_SERVICE_URL}/api/voice/commands",
+        "reports": f"{settings.REPORTS_SERVICE_URL}/api/dashboard",
     }
     if base_llm and not llm.requiere_clave:
         servicios["ollama"] = f"{base_llm}/api/tags"
@@ -166,18 +232,23 @@ async def diagnostico():
         "llm": LLMService.estado(),
         "servicios": resultados,
         "nota": (
-            "El chat, las rutinas y los quices funcionan sin LLM y sin los otros "
-            "microservicios. La recomendación de eventos necesita ink-ms-sports con "
-            "eventos publicados, y las preguntas abiertas del chat necesitan el LLM."
+            "Chat, rutinas, planes, riesgo, detección y fatiga RPE funcionan con motor "
+            "local. Eventos/deportes/competencia necesitan sports; alertas necesitan "
+            "accessibility; métricas enriquecen con reports si está arriba."
         ),
     }
 
 
-@app.get("/")
+@_fastapi.get("/")
 async def root():
     return {
         "service": "ink-ms-ai-assistant",
         "docs": "/docs",
         "health": "/api/ai/health",
         "diagnostico": "/api/ai/diagnostico",
+        "version": "2.3.0",
     }
+
+
+# Wrapper ASGI: uvicorn carga `app` (quita "/" final sin 307 a ai-service)
+app = _StripTrailingSlash(_fastapi)

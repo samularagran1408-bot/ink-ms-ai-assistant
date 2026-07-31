@@ -1,11 +1,15 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from typing import Any, Optional
 
+from app.database.mongodb import get_db
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.texto import normalizar
 from app.services.llm_service import LLMService
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
+
+COL_MODO_COMPETENCIA = "modo_competencia"
 
 
 def _fecha(valor) -> date | None:
@@ -41,13 +45,15 @@ class CompetenciaAgent:
     def _discapacidad_coincide(self, discapacidad_usuario: str, *candidatos: str) -> bool:
         return coincide(discapacidad_usuario, *candidatos)
 
-    async def _sport_ids_compatibles(self, discapacidad: str) -> tuple[set, dict, list]:
+    async def _sport_ids_compatibles(
+        self, discapacidad: str, authorization: str | None = None
+    ) -> tuple[set, dict, list]:
         """
         Devuelve sportIds compatibles con la discapacidad, mapa de adaptaciones y
         el catálogo completo de deportes activos.
         Usa GET /api/sports/active (disabilities anidadas) y /api/sport-disabilities/sport/{id}.
         """
-        deportes = await self.sports_service.get_deportes_activos()
+        deportes = await self.sports_service.get_deportes_activos(authorization)
         compatibles: set = set()
         adaptaciones_por_sport: dict = {}
 
@@ -68,7 +74,7 @@ class CompetenciaAgent:
                 if isinstance(d, dict)
             )
 
-            ads = await self.sports_service.get_adaptaciones_deporte(sid)
+            ads = await self.sports_service.get_adaptaciones_deporte(sid, authorization)
             ads_match = [
                 a for a in ads
                 if self._discapacidad_coincide(
@@ -220,15 +226,17 @@ class CompetenciaAgent:
             "recomendaciones": recomendaciones,
         }
 
-    async def analizar_rendimiento(self, usuario_id: str):
-        user_data = await self.user_service.get_user_profile(usuario_id)
+    async def analizar_rendimiento(
+        self, usuario_id: str, authorization: str | None = None
+    ):
+        user_data = await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad = user_data.get("disability") or "general"
         nombre = user_data.get("fullName") or "Usuario"
         email = user_data.get("email")
 
-        eventos_sistema = await self.sports_service.get_eventos()
+        eventos_sistema = await self.sports_service.get_eventos(authorization)
         sport_ids_ok, adaptaciones_por_sport, deportes = await self._sport_ids_compatibles(
-            discapacidad
+            discapacidad, authorization
         )
         nombres_deporte = {d.get("id"): d.get("name") for d in deportes}
 
@@ -247,9 +255,9 @@ class CompetenciaAgent:
             if str(e.get("status", "")).lower() not in ("cancelled", "finished", "cancelado", "finalizado")
         ]
 
-        inscritos = await self.sports_service.get_eventos_usuario(usuario_id)
+        inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
         if email and email != usuario_id:
-            extra = await self.sports_service.get_eventos_usuario(email)
+            extra = await self.sports_service.get_eventos_usuario(email, authorization)
             vistos = {e.get("eventId") or e.get("id") for e in inscritos}
             for e in extra:
                 key = e.get("eventId") or e.get("id")
@@ -423,3 +431,168 @@ SOLO JSON:
                 "eventsCreated": events_created_perfil,
             },
         }
+
+    async def activar_modo(
+        self,
+        usuario_id: str,
+        *,
+        activar: bool = True,
+        evento_id: Optional[str] = None,
+        objetivo: Optional[str] = None,
+        semanas: int = 3,
+        authorization: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """RF53 — activa o desactiva el modo competencia con plan de preparación."""
+        semanas = max(1, min(int(semanas or 3), 8))
+        analisis = await self.analizar_rendimiento(usuario_id, authorization)
+        usuario = analisis.get("usuario") or {}
+        discapacidad = usuario.get("disability") or "general"
+        proximo = None
+        if evento_id:
+            for e in analisis.get("eventos") or []:
+                if str(e.get("id")) == str(evento_id):
+                    proximo = e
+                    break
+        if proximo is None:
+            proximos = analisis.get("proximos_eventos") or []
+            proximo = proximos[0] if proximos else None
+
+        if not activar:
+            await self._guardar_modo(
+                usuario_id,
+                {
+                    "usuario_id": usuario_id,
+                    "activo": False,
+                    "evento_id": None,
+                    "objetivo": None,
+                    "semanas": semanas,
+                    "actualizado": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            return {
+                "activo": False,
+                "mensaje": "Modo competencia desactivado. Vuelve a entrenamiento base.",
+                "recomendaciones_retorno": [
+                    "Reduce la intensidad un 20–30% durante 3–5 días.",
+                    "Prioriza movilidad, técnica y sueño.",
+                    "Retoma volumen progresivo antes de la siguiente meta.",
+                ],
+                "usuario": usuario,
+                "rf": "RF53",
+            }
+
+        objetivo_txt = objetivo or (
+            f"Preparación para {proximo.get('nombre')}" if proximo else "Preparación competitiva general"
+        )
+        plan = self._plan_preparacion(
+            discapacidad=discapacidad,
+            semanas=semanas,
+            evento=proximo,
+            objetivo=objetivo_txt,
+            recomendaciones=analisis.get("recomendaciones") or [],
+        )
+
+        prompt = f"""
+Redacta un cierre breve (máx 3 frases) para un atleta inclusivo en modo competencia.
+Discapacidad: {discapacidad}. Objetivo: {objetivo_txt}. Semanas: {semanas}.
+Evento: {json.dumps(proximo or {}, ensure_ascii=False, default=str)}.
+Sólo texto plano, sin JSON.
+"""
+        nota_llm = await self.llm.texto(prompt, canonizar(discapacidad))
+
+        estado = {
+            "usuario_id": usuario_id,
+            "activo": True,
+            "evento_id": (proximo or {}).get("id") or evento_id,
+            "objetivo": objetivo_txt,
+            "semanas": semanas,
+            "plan": plan,
+            "actualizado": datetime.now(timezone.utc).isoformat(),
+        }
+        await self._guardar_modo(usuario_id, estado)
+
+        return {
+            "activo": True,
+            "objetivo": objetivo_txt,
+            "semanas": semanas,
+            "evento_objetivo": proximo,
+            "plan": plan,
+            "checklist": plan.get("checklist") or [],
+            "riesgos": plan.get("riesgos") or [],
+            "nota": nota_llm or plan.get("nota_local"),
+            "analisis_base": {
+                "ventajas": (analisis.get("ventajas") or [])[:3],
+                "desventajas": (analisis.get("desventajas") or [])[:3],
+                "recomendaciones": (analisis.get("recomendaciones") or [])[:3],
+            },
+            "usuario": usuario,
+            "rf": "RF53",
+        }
+
+    def _plan_preparacion(
+        self,
+        *,
+        discapacidad: str,
+        semanas: int,
+        evento: Optional[dict],
+        objetivo: str,
+        recomendaciones: list[str],
+    ) -> dict[str, Any]:
+        etiqueta = descripcion(canonizar(discapacidad))
+        fases = []
+        for i in range(1, semanas + 1):
+            if i < semanas:
+                foco = "construcción de base y técnica"
+                intensidad = "media"
+            else:
+                foco = "afinamiento y taper ligero"
+                intensidad = "media-baja"
+            fases.append({
+                "semana": i,
+                "foco": foco,
+                "intensidad": intensidad,
+                "sesiones_sugeridas": 3 if i < semanas else 2,
+                "nota": f"Adapta cada sesión a {etiqueta}; prioriza seguridad sobre volumen.",
+            })
+
+        checklist = [
+            "Confirma inscripción y logística del evento objetivo.",
+            "Registra RPE tras cada sesión de preparación.",
+            "Revisa adaptaciones del deporte con tu entrenador.",
+            "Duerme 7–9 h y marca al menos un día de descanso semanal.",
+        ]
+        if evento:
+            checklist.insert(
+                0,
+                f"Meta: {evento.get('nombre')} el {evento.get('fecha')} ({evento.get('deporte')}).",
+            )
+        riesgos = [
+            "Sobreentrenamiento por subir volumen demasiado rápido.",
+            "Ignorar dolor articular o fatiga acumulada (RPE ≥ 8).",
+        ]
+        if recomendaciones:
+            checklist.append(recomendaciones[0])
+
+        return {
+            "objetivo": objetivo,
+            "fases": fases,
+            "checklist": checklist,
+            "riesgos": riesgos,
+            "nota_local": (
+                f"Modo competencia activo por {semanas} semana(s) para {etiqueta}. "
+                "Mantén técnica limpia y carga progresiva."
+            ),
+        }
+
+    async def _guardar_modo(self, usuario_id: str, doc: dict[str, Any]) -> None:
+        db = get_db()
+        if db is None:
+            return
+        try:
+            await db[COL_MODO_COMPETENCIA].update_one(
+                {"usuario_id": usuario_id},
+                {"$set": doc},
+                upsert=True,
+            )
+        except Exception as exc:
+            print(f"No se pudo persistir modo competencia: {exc}")
