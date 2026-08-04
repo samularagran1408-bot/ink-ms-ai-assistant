@@ -64,6 +64,12 @@ URLs con los nombres de los contenedores.
 | `LLM_MODEL` / `LLM_API_URL` | según el proveedor | Se autocompletan si no concuerdan con el proveedor |
 | `LLM_TIMEOUT` | `120` | Segundos de espera por respuesta |
 | `LLM_COOLDOWN_SEGUNDOS` | `60` | Pausa tras un fallo del proveedor |
+| `LLM_SINTESIS_INTENIONES_CONOCIDAS` | `false` | Si `true`, el LLM reescribe también respuestas del motor local |
+| `CHAT_MAX_MENSAJES_POR_CONVERSACION` | `40` | Tope de mensajes guardados por hilo |
+| `CHAT_MAX_CONVERSACIONES_POR_USUARIO` | `10` | Cupo de hilos activos; el resto se archiva |
+| `CHAT_HISTORIAL_LLM_TURNOS` | `6` | Turnos recientes enviados al LLM |
+| `CHAT_MAX_CHARS_MENSAJE` | `2000` | Recorte al persistir |
+| `CHAT_RESUMEN_MAX_CHARS` | `800` | Tamaño del resumen de turnos viejos |
 
 ### El LLM es opcional
 
@@ -125,7 +131,17 @@ publicados. Útil cuando la recomendación de eventos vuelve vacía.
 
 El chat actúa como agente: clasifica la intención, ejecuta herramientas
 (eventos, rutinas, deportes, adaptaciones, quices), mantiene historial por
-`conversacion_id` y, si hay LLM, sintetiza una respuesta profesional.
+`conversacion_id` y, si hay LLM, puede sintetizar una respuesta profesional.
+
+**Anti-basura del historial**
+
+| Límite | Default | Efecto |
+|--------|---------|--------|
+| Mensajes por conversación | 40 | Se descartan los más viejos en Mongo |
+| Conversaciones activas / usuario | 10 | Las sobrantes pasan a `archivada` |
+| Turnos enviados al LLM | 6 | El resto se comprime en un `resumen` local |
+| Chars por mensaje | 2000 | Recorte al guardar |
+| Síntesis LLM en intenciones conocidas | off | No reescribe cada "hola"/eventos del motor |
 
 **POST** `/api/ai/chat/`
 
@@ -141,6 +157,7 @@ El chat actúa como agente: clasifica la intención, ejecuta herramientas
 `disability_type` es opcional (`visual`, `auditiva`, `motriz`, `cognitiva`,
 `intelectual`, `multiple`). Si se omite, se toma del token o se asume perfil
 general. Reenvía `conversacion_id` en turnos siguientes para continuidad.
+Si lo omites, se continúa la última conversación **activa** del usuario.
 
 Respuesta:
 
@@ -151,16 +168,45 @@ Respuesta:
   "intencion": "eventos",
   "adaptada": false,
   "confianza": 0.824,
-  "fuente": "agente",
+  "fuente": "motor_local",
   "agente": "inklusport-profesional",
   "herramientas_usadas": ["eventos"],
   "sugerencias": ["Pregúntame cómo inscribirte en el que te interese"],
-  "datos": { "eventos": [], "total": 9, "compatibles": 6 }
+  "datos": {
+    "eventos": [],
+    "total": 9,
+    "compatibles": 6,
+    "historial_turnos_contexto": 2,
+    "historial_con_resumen": false,
+    "sintesis_llm": false
+  }
 }
 ```
 
-**POST** `/api/ai/chat/stream` — mismos campos; responde `text/event-stream`
+**POST** `/api/ai/chat/stream` — mismos campos que el chat; responde `text/event-stream`
 con eventos `estado`, `herramienta`, `respuesta` y `fin`.
+
+```json
+{ "mensaje": "¿Qué eventos hay?", "conversacion_id": "opcional" }
+```
+
+No envíes aquí el body de rutinas (`tipo`, `objetivo`, `duracion_minutos`…).
+Eso va a `POST /api/ai/rutinas/generar`.
+
+**Historial (listo para el front)**
+
+Las rutas `/conversaciones` y `/sessions` son equivalentes (alias).
+
+| Método | Ruta | Uso |
+|--------|------|-----|
+| GET | `/api/ai/chat/conversaciones` o `/sessions` | Lista hilos del usuario |
+| GET | `/api/ai/chat/conversaciones/{id}` o `/sessions/{id}` | Mensajes + resumen |
+| DELETE | `/api/ai/chat/conversaciones/{id}` o `/sessions/{id}` | Borra un hilo |
+| POST | `/api/ai/chat/conversaciones/{id}/archivar` | Archiva sin borrar |
+| DELETE | `.../conversaciones?confirmar=true` o `.../sessions?confirmar=true` | Borra todo |
+| POST | `/api/ai/chat/nueva` o `POST /sessions` | Devuelve un id limpio |
+
+También acepta `session_id` como alias de `conversacion_id` en el body del chat.
 
 - `intencion`: intención detectada, o `no_entendido` si no se reconoce.
 - `confianza`: de 0 a 1. Por debajo de 0.34 se considera no reconocida.
@@ -377,24 +423,23 @@ evalúa una sola vez: para reintentar hay que generar uno nuevo.
 
 ---
 
-## RF41–RF55 (mapa rápido)
+## RF41–RF53 (mapa rápido)
 
-| RF | Endpoint | Estado |
-|----|----------|--------|
-| RF41 Biomecánico | — | Omitido (visión artificial) |
-| RF42 Adaptar ejercicio | `POST /api/ai/ejercicios/adaptar` (+ `/rutinas/adaptar`) | OK |
-| RF43 Riesgo lesión | `POST /api/ai/riesgo/lesiones/{userId}` (+ `/riesgo/evaluar`) | OK |
-| RF44 Planes / rutinas IA | `POST /api/ai/planes/generar`, `/rutinas/generar` | OK |
-| RF45 Fatiga | `POST /api/ai/fatiga/rpe` | Parcial (RPE; `detectar` omitido) |
-| RF46 Voz | `POST /api/ai/voz/comando` | OK (+ accessibility) |
-| RF47 Dashboard | `GET /api/ai/dashboard/{userId}` | OK |
-| RF48 Progreso | `GET /api/ai/progreso/comparativa/{userId}` | OK |
-| RF49 Eventos | `GET /api/ai/recomendacion/eventos/{id}` | OK |
-| RF50/51 Deportes | `GET /api/ai/deportes/filtrar/{id}` | OK |
-| RF52 Detección | `POST /api/ai/deteccion/discapacidad` | OK (pide confirmación) |
-| RF53 Modo competencia | `POST /api/ai/competencia/modo/{userId}` (+ `/analizar`) | OK |
-| RF54 Wearables | — | Omitido |
-| RF55 Alertas entrenador | `POST /api/ai/alertas/{entrenadorId}` (+ `/alertas/entrenador`) | OK |
+| RF | Endpoint | Prioridad | Estado |
+|----|----------|-----------|--------|
+| RF41 Adaptar ejercicio | `POST /api/ai/ejercicios/adaptar` | Ideal | OK |
+| RF42 Riesgo lesión | `POST /api/ai/riesgo/lesiones/{userId}` | Ideal | OK (heurística; sin visión) |
+| RF43 Planes / rutinas IA | `POST /api/ai/planes/generar`, `/rutinas/generar` | Esencial | OK |
+| RF44 Fatiga tiempo real | — | Opcional | Omitido (sensores); queda RPE en `/fatiga/rpe` |
+| RF45 Voz | `POST /api/ai/voz/comando` | Opcional | OK (+ accessibility; texto) |
+| RF46 Dashboard | `GET /api/ai/dashboard/{userId}` | Esencial | OK |
+| RF47 Comparativa historial | `GET /api/ai/progreso/comparativa/{userId}` | Esencial | OK |
+| RF48 Eventos | `GET /api/ai/recomendacion/eventos/{id}` | Ideal | OK |
+| RF49 Perfil → deportes | `GET /api/ai/deportes/filtrar/{id}` | Esencial | OK |
+| RF50 Filtrado deportes | `GET /api/ai/deportes/filtrar/{id}` | Ideal | OK |
+| RF51 Detección discapacidad | `POST /api/ai/deteccion/discapacidad` | Ideal | OK (texto + confirmación) |
+| RF52 Modo competencia | `POST /api/ai/competencia/modo/{userId}` | Ideal | OK |
+| RF53 Alertas entrenador | `POST /api/ai/alertas/{entrenadorId}` | Esencial | OK |
 
 ### Quices → rutinas de entrenador (sports)
 

@@ -1,30 +1,34 @@
 """Agente conversacional profesional de InkluSport.
 
 Orquesta: clasificación local de intenciones → herramientas (eventos, rutinas,
-deportes, adaptaciones, quices) → síntesis con LLM + historial cuando está
-disponible. Sin LLM el motor local sigue respondiendo completo.
+deportes, adaptaciones, quices) → síntesis con LLM + historial acotado cuando
+aporta. Sin LLM el motor local sigue respondiendo completo.
+
+El historial se persiste con cupos anti-basura (ver ConversacionService): el
+usuario puede recuperarlo por API; al LLM solo llegan resumen + últimos turnos.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 
+from app.config import settings
 from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
 from app.data.quiz_banco import BANCOS
-from app.database.mongodb import get_db
-from app.database.repositorio import COL_CONVERSACIONES, obtener_catalogo_ejercicios, obtener_conocimiento
+from app.database.repositorio import obtener_catalogo_ejercicios, obtener_conocimiento
 from app.motor.rutinas import generar_rutina
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
+from app.services.conversacion_service import ConversacionService
 from app.services.llm_service import LLMService, system_prompt
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
 
 _ROTACION: dict[tuple[str, str], int] = {}
 UMBRAL_CANDIDATO = 0.18
-HISTORIAL_MAX = 8
+# Intenciones sociales: no merecen gastar tokens en reescritura
+_SIN_SINTESIS = frozenset({"saludo", "despedida", "agradecimiento", "ayuda"})
 
 
 class ChatbotAgent:
@@ -32,6 +36,7 @@ class ChatbotAgent:
         self.llm = LLMService()
         self.sports_service = SportsService()
         self.user_service = UserService()
+        self.conversaciones = ConversacionService()
 
     # ------------------------------------------------------------------ público
 
@@ -43,9 +48,14 @@ class ChatbotAgent:
         authorization: Optional[str] = None,
         conversacion_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        conversacion_id = conversacion_id or str(uuid.uuid4())
+        historial, cid_efectiva, resumen = await self.conversaciones.cargar_contexto_llm(
+            usuario_id, conversacion_id or ""
+        )
+        # Sin id del cliente: continúa la última activa; si no hay, crea una nueva.
+        conversacion_id = conversacion_id or cid_efectiva or str(uuid.uuid4())
         clave_discapacidad = canonizar(discapacidad)
-        historial = await self._cargar_historial(usuario_id, conversacion_id)
+        historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
+
         clasificacion = clasificar(mensaje)
         intencion = clasificacion["nombre"]
 
@@ -55,11 +65,16 @@ class ChatbotAgent:
             )
         else:
             resultado = await self._responder_desconocido(
-                usuario_id, mensaje, clave_discapacidad, clasificacion, authorization, historial
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                clasificacion,
+                authorization,
+                historial_llm,
             )
 
         resultado = await self._sintetizar_como_agente(
-            mensaje, resultado, clave_discapacidad, historial
+            mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
         )
 
         resultado["intencion"] = resultado.get("intencion") or intencion or "no_entendido"
@@ -67,8 +82,12 @@ class ChatbotAgent:
         resultado["terminos_detectados"] = clasificacion["terminos"]
         resultado["conversacion_id"] = conversacion_id
         resultado["agente"] = "inklusport-profesional"
+        resultado["historial_turnos_contexto"] = len(historial) // 2
+        resultado["historial_con_resumen"] = bool(resumen)
 
-        await self._guardar_conversacion(usuario_id, conversacion_id, mensaje, resultado)
+        await self.conversaciones.guardar_turno(
+            usuario_id, conversacion_id, mensaje, resultado
+        )
         return resultado
 
     async def procesar_mensaje_stream(
@@ -81,9 +100,13 @@ class ChatbotAgent:
     ) -> AsyncIterator[dict[str, Any]]:
         """Emite fases del agente (SSE) y cierra con la respuesta final."""
         yield {"evento": "estado", "detalle": "analizando_intencion"}
-        conversacion_id = conversacion_id or str(uuid.uuid4())
+        historial, cid_efectiva, resumen = await self.conversaciones.cargar_contexto_llm(
+            usuario_id, conversacion_id or ""
+        )
+        conversacion_id = conversacion_id or cid_efectiva or str(uuid.uuid4())
         clave_discapacidad = canonizar(discapacidad)
-        historial = await self._cargar_historial(usuario_id, conversacion_id)
+        historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
+
         clasificacion = clasificar(mensaje)
         intencion = clasificacion["nombre"]
 
@@ -96,13 +119,18 @@ class ChatbotAgent:
         else:
             yield {"evento": "estado", "detalle": "consultando_conocimiento"}
             resultado = await self._responder_desconocido(
-                usuario_id, mensaje, clave_discapacidad, clasificacion, authorization, historial
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                clasificacion,
+                authorization,
+                historial_llm,
             )
 
-        if self.llm.disponible:
+        if self._debe_sintetizar(resultado, clasificacion):
             yield {"evento": "estado", "detalle": "redactando_respuesta"}
         resultado = await self._sintetizar_como_agente(
-            mensaje, resultado, clave_discapacidad, historial
+            mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
         )
 
         resultado["intencion"] = resultado.get("intencion") or intencion or "no_entendido"
@@ -110,8 +138,12 @@ class ChatbotAgent:
         resultado["terminos_detectados"] = clasificacion["terminos"]
         resultado["conversacion_id"] = conversacion_id
         resultado["agente"] = "inklusport-profesional"
+        resultado["historial_turnos_contexto"] = len(historial) // 2
+        resultado["historial_con_resumen"] = bool(resumen)
 
-        await self._guardar_conversacion(usuario_id, conversacion_id, mensaje, resultado)
+        await self.conversaciones.guardar_turno(
+            usuario_id, conversacion_id, mensaje, resultado
+        )
         yield {"evento": "respuesta", "datos": resultado}
         yield {"evento": "fin", "conversacion_id": conversacion_id}
 
@@ -227,11 +259,12 @@ class ChatbotAgent:
         resultado: dict[str, Any],
         discapacidad: str,
         historial: list[dict[str, str]],
+        clasificacion: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Pule la respuesta del motor local como un agente profesional con historial."""
-        if resultado.get("fuente") == "agente":
-            return resultado
-        if not self.llm.disponible:
+        """Pule la respuesta del motor local solo cuando el gate lo permite."""
+        if not self._debe_sintetizar(resultado, clasificacion or {}):
+            resultado = dict(resultado)
+            resultado.setdefault("sintesis_llm", False)
             return resultado
 
         borrador = resultado.get("respuesta") or ""
@@ -256,13 +289,38 @@ class ChatbotAgent:
         ]
         pulido = await self.llm.texto_mensajes(mensajes, temperatura=0.5)
         if not pulido:
+            resultado = dict(resultado)
+            resultado["sintesis_llm"] = False
             return resultado
 
         resultado = dict(resultado)
         resultado["respuesta"] = pulido
         resultado["fuente"] = "agente"
         resultado["borrador_motor"] = borrador
+        resultado["sintesis_llm"] = True
         return resultado
+
+    def _debe_sintetizar(
+        self, resultado: dict[str, Any], clasificacion: dict[str, Any]
+    ) -> bool:
+        """Evita quemar tokens en saludos y respuestas ya resueltas por el motor."""
+        if resultado.get("fuente") == "agente":
+            return False
+        if not self.llm.disponible:
+            return False
+
+        intencion = (resultado.get("intencion") or "").lower()
+        if intencion in _SIN_SINTESIS:
+            return False
+
+        # Por defecto no reescribimos intenciones conocidas (motor local basta).
+        if intencion and intencion not in ("no_entendido", "general"):
+            if not settings.LLM_SINTESIS_INTENIONES_CONOCIDAS:
+                # Excepción: aproximación débil del clasificador
+                if not resultado.get("aproximada"):
+                    return False
+
+        return True
 
     async def _contexto_plataforma(self, authorization: Optional[str]) -> str:
         try:
@@ -544,71 +602,3 @@ class ChatbotAgent:
             "umbral_organizador": 70,
             "umbral_entrenador": 75,
         }
-
-    # ------------------------------------------------------------ persistencia
-
-    async def _cargar_historial(
-        self, usuario_id: str, conversacion_id: str
-    ) -> list[dict[str, str]]:
-        db = get_db()
-        if db is None:
-            return []
-        try:
-            doc = await db[COL_CONVERSACIONES].find_one(
-                {"usuario_id": usuario_id, "conversacion_id": conversacion_id}
-            )
-            if not doc:
-                doc = await db[COL_CONVERSACIONES].find_one(
-                    {"usuario_id": usuario_id, "estado": "activa"},
-                    sort=[("ultima_interaccion", -1)],
-                )
-            if not doc:
-                return []
-            mensajes = doc.get("mensajes") or []
-            historial: list[dict[str, str]] = []
-            for m in mensajes[-HISTORIAL_MAX * 2 :]:
-                rol = "assistant" if m.get("remitente") == "asistente" else "user"
-                texto = (m.get("mensaje") or "").strip()
-                if texto:
-                    historial.append({"role": rol, "content": texto})
-            return historial[-HISTORIAL_MAX * 2 :]
-        except Exception as exc:
-            print(f"Error cargando historial: {exc}")
-            return []
-
-    async def _guardar_conversacion(
-        self,
-        usuario_id: str,
-        conversacion_id: str,
-        mensaje: str,
-        resultado: dict[str, Any],
-    ) -> None:
-        db = get_db()
-        if db is None:
-            return
-        ahora = datetime.now(timezone.utc)
-        try:
-            await db[COL_CONVERSACIONES].update_one(
-                {"usuario_id": usuario_id, "conversacion_id": conversacion_id},
-                {
-                    "$push": {"mensajes": {"$each": [
-                        {"mensaje": mensaje, "remitente": "usuario", "fecha": ahora},
-                        {
-                            "mensaje": resultado["respuesta"],
-                            "remitente": "asistente",
-                            "intencion": resultado["intencion"],
-                            "fuente": resultado.get("fuente"),
-                            "fecha": ahora,
-                        },
-                    ]}},
-                    "$set": {
-                        "ultima_interaccion": ahora,
-                        "estado": "activa",
-                        "agente": resultado.get("agente"),
-                    },
-                    "$setOnInsert": {"creada_en": ahora},
-                },
-                upsert=True,
-            )
-        except Exception as exc:
-            print(f"Error guardando conversación: {exc}")

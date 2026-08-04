@@ -52,7 +52,8 @@ PERFILES: dict[str, dict[str, Any]] = {
         "nombre": "xai",
         "dominio": "x.ai",
         "url": "https://api.x.ai/v1/chat/completions",
-        "modelo": "grok-4.5",
+        # 4.3: mejor ratio calidad/precio para chat de producto; 4.5 solo si se fuerza.
+        "modelo": "grok-4.3",
         "modelo_valido": lambda m: m.startswith("grok"),
     },
     "openai": {

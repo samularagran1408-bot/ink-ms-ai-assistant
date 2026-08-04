@@ -75,6 +75,17 @@ class Settings:
     # que el chat no espere el timeout completo en cada petición.
     LLM_COOLDOWN_SEGUNDOS = _int("LLM_COOLDOWN_SEGUNDOS", 60)
 
+    # Si true, el LLM reescribe también respuestas de intenciones ya resueltas
+    # por el motor local (más tokens). Por defecto solo pulimos casos difíciles.
+    LLM_SINTESIS_INTENIONES_CONOCIDAS = _bool("LLM_SINTESIS_INTENIONES_CONOCIDAS", False)
+
+    # Historial de chat: anti-basura en Mongo y en el prompt del LLM
+    CHAT_MAX_MENSAJES_POR_CONVERSACION = _int("CHAT_MAX_MENSAJES_POR_CONVERSACION", 40)
+    CHAT_MAX_CONVERSACIONES_POR_USUARIO = _int("CHAT_MAX_CONVERSACIONES_POR_USUARIO", 10)
+    CHAT_HISTORIAL_LLM_TURNOS = _int("CHAT_HISTORIAL_LLM_TURNOS", 6)
+    CHAT_MAX_CHARS_MENSAJE = _int("CHAT_MAX_CHARS_MENSAJE", 2000)
+    CHAT_RESUMEN_MAX_CHARS = _int("CHAT_RESUMEN_MAX_CHARS", 800)
+
     # Compatibilidad con el nombre anterior de las variables
     GROK_API_KEY = LLM_API_KEY
     GROK_MODEL = LLM_MODEL

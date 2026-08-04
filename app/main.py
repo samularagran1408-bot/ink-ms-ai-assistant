@@ -94,11 +94,11 @@ class _StripTrailingSlash:
 _fastapi = FastAPI(
     title="InkluSport AI Assistant",
     description=(
-        "Agente profesional de InkluSport (RF41–RF55): chat, rutinas/planes, "
-        "recomendaciones, competencia, riesgo, métricas, alertas y voz. "
+        "Agente profesional de InkluSport (RF41–RF53): chat con historial acotado, "
+        "rutinas/planes, recomendaciones, competencia, riesgo, métricas, alertas y voz. "
         "Expone /api/ai/** vía gateway en inklusport.inklusport.uk."
     ),
-    version="2.3.0",
+    version="2.4.0",
     lifespan=lifespan,
     redirect_slashes=False,
 )
@@ -136,7 +136,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "ink-ms-ai-assistant",
-        "version": "2.3.0",
+        "version": "2.4.0",
         "auth": "Bearer JWT → GET /api/users/perfil (discapacidad y roles reales)",
         "agents": [
             "chatbot", "rutinas", "planes", "competencia", "recomendacion",
@@ -144,21 +144,24 @@ async def health_check():
             "deteccion", "fatiga", "voz", "quiz",
         ],
         "rf_cubiertos": {
-            "RF41": "omitido (requiere visión artificial)",
-            "RF42": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar)",
-            "RF43": "POST /api/ai/riesgo/lesiones/{userId} (+ alias /riesgo/evaluar)",
-            "RF44": "POST /api/ai/rutinas/generar + POST /api/ai/planes/generar",
-            "RF45": "parcial POST /api/ai/fatiga/rpe (detectar omitido; sin sensores RT)",
-            "RF46": "POST /api/ai/voz/comando (+ accessibility)",
-            "RF47": "GET /api/ai/dashboard/{userId} (+ historial/metricas)",
-            "RF48": "GET /api/ai/progreso/comparativa/{userId} (+ historial/comparar)",
-            "RF49": "GET /api/ai/recomendacion/eventos/{id}",
-            "RF50": "GET /api/ai/deportes/filtrar/{id}",
-            "RF51": "GET /api/ai/deportes/filtrar/{id}",
-            "RF52": "POST /api/ai/deteccion/discapacidad",
-            "RF53": "POST /api/ai/competencia/modo/{userId} (+ analizar)",
-            "RF54": "omitido (wearables vendor)",
-            "RF55": "POST /api/ai/alertas/{entrenadorId} (+ /alertas/entrenador)",
+            "RF41": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar) — Ideal",
+            "RF42": "POST /api/ai/riesgo/lesiones/{userId} (+ /riesgo/evaluar) — Ideal",
+            "RF43": "POST /api/ai/rutinas/generar + POST /api/ai/planes/generar — Esencial",
+            "RF44": "omitido (fatiga sensores / HR en tiempo real; queda RPE manual en /fatiga/rpe)",
+            "RF45": "POST /api/ai/voz/comando (+ accessibility) — Opcional",
+            "RF46": "GET /api/ai/dashboard/{userId} (+ historial/metricas) — Esencial",
+            "RF47": "GET /api/ai/progreso/comparativa/{userId} (+ historial/comparar) — Esencial",
+            "RF48": "GET /api/ai/recomendacion/eventos/{id} — Ideal",
+            "RF49": "GET /api/ai/deportes/filtrar/{id} + perfil (edad/discapacidad/nivel) — Esencial",
+            "RF50": "GET /api/ai/deportes/filtrar/{id} — Ideal",
+            "RF51": "POST /api/ai/deteccion/discapacidad (texto; confirma usuario) — Ideal",
+            "RF52": "POST /api/ai/competencia/modo/{userId} (+ analizar) — Ideal",
+            "RF53": "POST /api/ai/alertas/{entrenadorId} (+ /alertas/entrenador) — Esencial",
+            "chat_historial": (
+                "GET/DELETE /api/ai/chat/conversaciones* — cupos anti-basura "
+                "(mensajes, conversaciones, resumen + últimos turnos al LLM)"
+            ),
+            "quiz": "POST /api/ai/quiz/organizer|trainer/generar|evaluar",
         },
         "gateway_path": "/api/ai/**",
         "public_base": "https://inklusport.inklusport.uk",
@@ -246,7 +249,7 @@ async def root():
         "docs": "/docs",
         "health": "/api/ai/health",
         "diagnostico": "/api/ai/diagnostico",
-        "version": "2.3.0",
+        "version": "2.4.0",
     }
 
 
