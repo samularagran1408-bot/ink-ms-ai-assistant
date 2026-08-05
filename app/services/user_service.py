@@ -110,14 +110,46 @@ class UserService:
             print(f"Error obteniendo perfil de usuario {user_id}: {e}")
             return {}
 
+    async def get_quiz_prep_status(
+        self, role: str, user_id: str, authorization: Optional[str] = None
+    ) -> dict[str, Any]:
+        """
+        /**
+         * Consulta el estado de prep/intentos del quiz en ink-ms-users.
+         */
+        """
+        role_path = "organizer" if str(role).upper() in ("ORGANIZADOR", "ORGANIZER") else "trainer"
+        headers = self._headers(authorization)
+        url = f"{self.base_url}/api/users/verify/quiz/prep/{role_path}/{user_id}"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, headers=headers or None)
+                if response.status_code == 200:
+                    data = response.json()
+                    return data if isinstance(data, dict) else {}
+                print(f"Error quiz prep status ({response.status_code}): {response.text[:200]}")
+        except Exception as e:
+            print(f"Error consultando quiz prep: {e}")
+        return {}
+
     async def save_organizer_quiz_score(
         self, user_id: str, score: float, authorization: Optional[str] = None
     ) -> bool:
+        """
+        /**
+         * Registra el puntaje del quiz de organizador en ink-ms-users.
+         */
+        """
         return await self._save_quiz_score("organizer", user_id, score, authorization)
 
     async def save_trainer_quiz_score(
         self, user_id: str, score: float, authorization: Optional[str] = None
     ) -> bool:
+        """
+        /**
+         * Registra el puntaje del quiz de entrenador en ink-ms-users.
+         */
+        """
         return await self._save_quiz_score("trainer", user_id, score, authorization)
 
     async def _save_quiz_score(
@@ -127,6 +159,11 @@ class UserService:
         score: float,
         authorization: Optional[str] = None,
     ) -> bool:
+        """
+        /**
+         * POST interno a /api/users/verify/quiz/{role}/{userId}?score=...
+         */
+        """
         headers = self._headers(authorization)
         url = f"{self.base_url}/api/users/verify/quiz/{role_path}/{user_id}"
         try:

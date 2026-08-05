@@ -8,12 +8,24 @@ from typing import Any, Optional
 
 from app.database.mongodb import get_db
 from app.database.repositorio import COL_PLANES, obtener_catalogo_ejercicios
-from app.motor.rutinas import generar_rutina
+from app.motor.rutinas import generar_rutina, interpretar_objetivo
 from app.nlp.discapacidad import canonizar
 from app.services.llm_service import LLMService
 from app.services.user_service import UserService
 
 NIVELES = ("principiante", "intermedio", "avanzado")
+
+# Variación semanal/diaria afín al objetivo del usuario (no forzar "fuerza" si pidió reflejos)
+_VARIACION_POR_OBJETIVO = {
+    "fuerza": ("fuerza", "resistencia", "core"),
+    "resistencia": ("resistencia", "movilidad", "fuerza"),
+    "movilidad": ("movilidad", "flexibilidad", "equilibrio"),
+    "flexibilidad": ("flexibilidad", "movilidad", "equilibrio"),
+    "equilibrio": ("equilibrio", "movilidad", "resistencia"),
+    "rehabilitacion": ("rehabilitacion", "movilidad", "flexibilidad"),
+    "peso": ("peso", "resistencia", "fuerza"),
+    "general": ("fuerza", "resistencia", "movilidad"),
+}
 
 
 class PlanesAgent:
@@ -46,18 +58,21 @@ class PlanesAgent:
 
         sesiones: list[dict[str, Any]] = []
         idx_nivel = NIVELES.index(nivel_base)
+        objetivo_clave = interpretar_objetivo(objetivo)
+        variacion = _VARIACION_POR_OBJETIVO.get(
+            objetivo_clave, _VARIACION_POR_OBJETIVO["general"]
+        )
         for semana in range(1, semanas + 1):
             # Progresión suave: sube nivel a mitad de plan si hay margen.
             nivel_semana = NIVELES[min(idx_nivel + (1 if semana > semanas // 2 else 0), 2)]
             for dia in range(1, sesiones_por_semana + 1):
                 semilla = hash(f"{usuario_id}-{semana}-{dia}-{objetivo}") % 10_000_000
-                # Alterna énfasis: fuerza / resistencia / movilidad
-                enfoque = ("fuerza", "resistencia", "movilidad")[(dia - 1) % 3]
-                objetivo_sesion = objetivo if objetivo and objetivo != "general" else enfoque
+                enfoque = variacion[(dia - 1) % len(variacion)]
+                # Objetivo del usuario manda; el enfoque del día aporta variedad afín
                 rutina = generar_rutina(
                     discapacidad=discapacidad_final,
-                    objetivo_texto=objetivo_sesion,
-                    tipo_texto=enfoque,
+                    objetivo_texto=objetivo if objetivo_clave != "general" else enfoque,
+                    tipo_texto=enfoque if objetivo_clave != "general" else "",
                     nivel=nivel_semana,
                     duracion_minutos=duracion_minutos + (5 if semana > 2 else 0),
                     semilla=semilla,
@@ -69,6 +84,7 @@ class PlanesAgent:
                     "enfoque": enfoque,
                     "nivel": nivel_semana,
                     "nombre": rutina["nombre"],
+                    "objetivo_clave": rutina.get("objetivo_clave"),
                     "duracion_estimada_minutos": rutina["duracion_estimada_minutos"],
                     "total_ejercicios": rutina["total_ejercicios"],
                     "bloques": rutina["bloques"],

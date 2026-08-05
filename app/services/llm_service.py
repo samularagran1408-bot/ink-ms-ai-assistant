@@ -375,6 +375,8 @@ def system_prompt(disability_type: str = "general", sistema_extra: str = "") -> 
         "las herramientas o el contexto de plataforma.\n"
         "- Si falta información, dilo y ofrece el siguiente paso concreto.\n"
         "- Mantén continuidad con el historial de la conversación.\n"
+        "- Suena a chatbot real: evita plantillas repetidas y no digas que no entiendes "
+        "si puedes aportar una respuesta útil.\n"
         f"- Adaptación requerida: {contexto}"
     )
     if sistema_extra:

@@ -32,10 +32,19 @@ _INCOMPATIBLES_POSICION: dict[str, tuple[str, ...]] = {
 
 _ALIAS_OBJETIVO: dict[str, tuple[str, ...]] = {
     "fuerza": ("fuerza", "fortalecer", "musculo", "muscular", "tonificar", "potencia"),
-    "resistencia": ("resistencia", "cardio", "aerobico", "aguante", "fondo", "capacidad"),
+    "resistencia": (
+        "resistencia", "cardio", "aerobico", "aguante", "fondo", "capacidad",
+        # Actividades de marcha / desplazamiento (no fuerza)
+        "caminar", "caminata", "paseo", "pasear", "marcha", "andar", "trotar",
+        "correr", "footing", "bicicleta", "pedalear", "remo",
+    ),
     "movilidad": ("movilidad", "amplitud", "articular", "rango"),
     "flexibilidad": ("flexibilidad", "estirar", "estiramiento", "elasticidad"),
-    "equilibrio": ("equilibrio", "estabilidad", "postural", "coordinacion"),
+    "equilibrio": (
+        "equilibrio", "estabilidad", "postural", "coordinacion",
+        # Reflejos / agilidad → control postural y reacción
+        "reflejos", "reflejo", "agilidad", "reaccion", "propiocepcion", "balance",
+    ),
     "rehabilitacion": ("rehabilitacion", "recuperar", "recuperacion", "lesion", "dolor", "suave", "terapia"),
     "peso": ("peso", "adelgazar", "grasa", "calorias", "quemar"),
 }
@@ -67,6 +76,23 @@ def _detectar(texto: str, alias: dict[str, tuple[str, ...]]) -> Optional[str]:
 
 def interpretar_objetivo(texto: str) -> str:
     return _detectar(texto, _ALIAS_OBJETIVO) or "general"
+
+
+def interpretar_objetivos(objetivo_texto: str, tipo_texto: str = "") -> tuple[str, Optional[str]]:
+    """Objetivo principal + secundario.
+
+    El campo `objetivo` manda; `tipo` aporta un segundo énfasis (p. ej. caminar +
+    reflejos → resistencia + equilibrio). Si solo uno matchea, ese es el principal.
+    """
+    prim = interpretar_objetivo(objetivo_texto)
+    sec = interpretar_objetivo(tipo_texto)
+    if prim != "general":
+        return prim, (sec if sec not in ("general", prim) else None)
+    if sec != "general":
+        return sec, None
+    # Ambos en el mismo string por si el cliente pone todo en un solo campo
+    mezclado = interpretar_objetivo(f"{objetivo_texto} {tipo_texto}")
+    return mezclado, None
 
 
 def interpretar_posicion(texto: str) -> Optional[str]:
@@ -125,11 +151,21 @@ def _puntuar(
     posicion: Optional[str],
     nivel: str,
     discapacidad: str,
+    objetivo_secundario: Optional[str] = None,
 ) -> float:
     puntaje = 0.0
-    if objetivo in (ejercicio.get("objetivos") or []):
-        puntaje += 4.0
-    if objetivo == "general":
+    objetivos_ej = ejercicio.get("objetivos") or []
+    # El objetivo pedido debe pesar más que el sesgo del perfil de discapacidad
+    # (p. ej. motriz prioriza "fuerza", pero si pides reflejos/caminar no debe ganar).
+    if objetivo in objetivos_ej:
+        puntaje += 6.0
+    if objetivo_secundario and objetivo_secundario in objetivos_ej:
+        puntaje += 3.5
+    if ejercicio.get("categoria") == objetivo:
+        puntaje += 2.0
+    if objetivo_secundario and ejercicio.get("categoria") == objetivo_secundario:
+        puntaje += 1.5
+    if objetivo == "general" and not objetivo_secundario:
         puntaje += 1.0
     if posicion and ejercicio.get("posicion") == posicion:
         puntaje += 2.5
@@ -149,12 +185,88 @@ def _puntuar(
         puntaje += 1.5 + (1.5 if len(permitidas) <= 2 else 0.0)
 
     categorias = perfil["categorias_prioritarias"]
-    if ejercicio.get("categoria") in categorias:
-        # Se degrada según el orden: la primera categoría del perfil pesa más.
-        puntaje += 2.5 - 0.5 * categorias.index(ejercicio["categoria"])
+    # Solo aplica el sesgo del perfil cuando el objetivo es general; si el usuario
+    # pidió algo concreto, no empujamos a fuerza/core por discapacidad.
+    if objetivo == "general" and not objetivo_secundario and categorias:
+        if ejercicio.get("categoria") in categorias:
+            puntaje += 2.5 - 0.5 * categorias.index(ejercicio["categoria"])
 
     puntaje -= perfil["posiciones_penalizadas"].get(ejercicio.get("posicion"), 0.0)
     return puntaje
+
+
+def _sample_ponderado(
+    pool: list[dict],
+    cantidad: int,
+    objetivo: str,
+    posicion: Optional[str],
+    nivel: str,
+    discapacidad: str,
+    azar: random.Random,
+    objetivo_secundario: Optional[str] = None,
+    excluir_ids: Optional[set[str]] = None,
+) -> list[dict]:
+    """Elige con peso por puntaje (no siempre el top fijo) para variar rutinas."""
+    if not pool or cantidad <= 0:
+        return []
+
+    excluir_ids = excluir_ids or set()
+    # Ventana de candidatos: top-K tras jitter, luego sample ponderado
+    puntuados: list[tuple[float, dict]] = []
+    for e in pool:
+        base = _puntuar(e, objetivo, posicion, nivel, discapacidad, objetivo_secundario)
+        if e.get("id") in excluir_ids:
+            base -= 2.5  # evita repetir la rutina anterior del mismo usuario
+        # Ruido controlado: suficiente para variar, no para elegir basura
+        score = max(0.05, base + azar.uniform(-1.2, 1.2))
+        puntuados.append((score, e))
+
+    puntuados.sort(key=lambda x: x[0], reverse=True)
+    ventana = puntuados[: max(cantidad * 4, min(14, len(puntuados)))]
+
+    elegidos: list[dict] = []
+    categorias_usadas: set[str] = set()
+    ids_usados: set[str] = set()
+    restantes = list(ventana)
+
+    def _tomar(preferir_categoria_nueva: bool) -> Optional[dict]:
+        nonlocal restantes
+        candidatos = [
+            (s, e) for s, e in restantes
+            if e.get("id") not in ids_usados
+            and (not preferir_categoria_nueva or e.get("categoria") not in categorias_usadas)
+        ]
+        if not candidatos and preferir_categoria_nueva:
+            candidatos = [(s, e) for s, e in restantes if e.get("id") not in ids_usados]
+        if not candidatos:
+            return None
+        pesos = [max(0.05, s) ** 1.6 for s, _ in candidatos]
+        elegido = azar.choices([e for _, e in candidatos], weights=pesos, k=1)[0]
+        restantes = [(s, e) for s, e in restantes if e.get("id") != elegido.get("id")]
+        return elegido
+
+    # Primera pasada: diversidad de categorías
+    while len(elegidos) < cantidad:
+        pick = _tomar(preferir_categoria_nueva=True)
+        if not pick:
+            break
+        elegidos.append(pick)
+        categorias_usadas.add(pick.get("categoria") or "")
+        if pick.get("id"):
+            ids_usados.add(pick["id"])
+
+    # Segunda: rellenar desde el resto del pool si hace falta
+    if len(elegidos) < cantidad:
+        resto = [e for e in pool if e.get("id") not in ids_usados]
+        azar.shuffle(resto)
+        for e in resto:
+            if len(elegidos) >= cantidad:
+                break
+            elegidos.append(e)
+            if e.get("id"):
+                ids_usados.add(e["id"])
+
+    return elegidos[:cantidad]
 
 
 def _seleccionar(
@@ -165,34 +277,25 @@ def _seleccionar(
     nivel: str,
     discapacidad: str,
     azar: random.Random,
+    objetivo_secundario: Optional[str] = None,
+    excluir_ids: Optional[set[str]] = None,
 ) -> list[dict]:
-    """Elige `cantidad` ejercicios priorizando puntaje y variando categorías."""
+    """Elige `cantidad` ejercicios con variedad entre peticiones."""
     pool = list(candidatos)
     if not pool:
         return []
-
     azar.shuffle(pool)
-    pool.sort(key=lambda e: _puntuar(e, objetivo, posicion, nivel, discapacidad), reverse=True)
-
-    elegidos: list[dict] = []
-    categorias_usadas: set[str] = set()
-
-    # Primera pasada: una categoría distinta cada vez, para no repetir estímulo
-    for ejercicio in pool:
-        if len(elegidos) >= cantidad:
-            break
-        if ejercicio["categoria"] not in categorias_usadas:
-            elegidos.append(ejercicio)
-            categorias_usadas.add(ejercicio["categoria"])
-
-    # Segunda pasada: completar con los mejores restantes
-    for ejercicio in pool:
-        if len(elegidos) >= cantidad:
-            break
-        if ejercicio not in elegidos:
-            elegidos.append(ejercicio)
-
-    return elegidos[:cantidad]
+    return _sample_ponderado(
+        pool,
+        cantidad,
+        objetivo,
+        posicion,
+        nivel,
+        discapacidad,
+        azar,
+        objetivo_secundario,
+        excluir_ids,
+    )
 
 
 def _formatear(ejercicio: dict, discapacidad: str) -> dict[str, Any]:
@@ -296,11 +399,12 @@ def generar_rutina(
     duracion_minutos: int = 35,
     semilla: Optional[int] = None,
     catalogo: Optional[list[dict]] = None,
+    excluir_ids: Optional[set[str]] = None,
 ) -> dict[str, Any]:
     """Compone una rutina completa a partir del catálogo de ejercicios."""
     ejercicios_disponibles = catalogo or CATALOGO_EJERCICIOS
     clave_discapacidad = canonizar(discapacidad)
-    objetivo = interpretar_objetivo(f"{objetivo_texto} {tipo_texto}")
+    objetivo, objetivo_secundario = interpretar_objetivos(objetivo_texto, tipo_texto)
     posicion = interpretar_posicion(f"{tipo_texto} {discapacidad}")
     nivel_final = nivel or interpretar_nivel(f"{tipo_texto} {objetivo_texto}") or "principiante"
     if nivel_final not in NIVEL_ORDEN:
@@ -310,6 +414,7 @@ def generar_rutina(
     if clave_discapacidad in ("motriz", "multiple") and posicion is None:
         posicion = "sentado"
 
+    # Semilla fija → misma rutina siempre. Sin semilla → variación entre peticiones.
     azar = random.Random(semilla)
 
     # Descarta documentos incompletos (p. ej. catálogo Mongo antiguo).
@@ -344,16 +449,28 @@ def generar_rutina(
         if not lista:
             por_fase[fase] = list(aptos)
 
-    seleccion = {
-        fase: _seleccionar(
-            por_fase[fase], cantidad, objetivo, posicion, nivel_final, clave_discapacidad, azar
+    excluidos = set(excluir_ids or ())
+    seleccion: dict[str, list[dict]] = {}
+    for fase, cantidad in (
+        ("calentamiento", n_cal),
+        ("principal", n_prin),
+        ("vuelta_a_la_calma", n_vuelta),
+    ):
+        elegidos = _seleccionar(
+            por_fase[fase],
+            cantidad,
+            objetivo,
+            posicion,
+            nivel_final,
+            clave_discapacidad,
+            azar,
+            objetivo_secundario,
+            excluidos,
         )
-        for fase, cantidad in (
-            ("calentamiento", n_cal),
-            ("principal", n_prin),
-            ("vuelta_a_la_calma", n_vuelta),
-        )
-    }
+        seleccion[fase] = elegidos
+        for e in elegidos:
+            if e.get("id"):
+                excluidos.add(e["id"])
 
     bloques = []
     ejercicios_planos = []
@@ -381,10 +498,17 @@ def generar_rutina(
     pauta = PAUTAS_DISCAPACIDAD.get(clave_discapacidad, PAUTAS_DISCAPACIDAD["general"])
     avisos = sorted({e["seguridad"] for e in ejercicios_planos if e["seguridad"]})
 
+    etiqueta_obj = OBJETIVOS.get(objetivo, OBJETIVOS["general"])
+    if objetivo_secundario:
+        etiqueta_obj = (
+            f"{etiqueta_obj} + {OBJETIVOS.get(objetivo_secundario, objetivo_secundario)}"
+        )
+
     return {
-        "nombre": f"Rutina de {OBJETIVOS.get(objetivo, OBJETIVOS['general']).lower()} · {descripcion(clave_discapacidad)}",
-        "objetivo": OBJETIVOS.get(objetivo, OBJETIVOS["general"]),
+        "nombre": f"Rutina de {etiqueta_obj.lower()} · {descripcion(clave_discapacidad)}",
+        "objetivo": etiqueta_obj,
         "objetivo_clave": objetivo,
+        "objetivo_secundario": objetivo_secundario,
         "nivel": nivel_final,
         "discapacidad": clave_discapacidad,
         "discapacidad_descripcion": descripcion(clave_discapacidad),
@@ -400,4 +524,17 @@ def generar_rutina(
         ),
         "avisos_seguridad": avisos,
         "fuente": "motor_local",
+        "interpretacion": {
+            "objetivo_texto": objetivo_texto,
+            "tipo_texto": tipo_texto,
+            "objetivo_detectado": objetivo,
+            "objetivo_secundario_detectado": objetivo_secundario,
+            "posicion_detectada": posicion,
+            "semilla": semilla,
+            "nota": (
+                "Misma semilla = misma rutina. Omite 'semilla' para variar."
+                if semilla is not None
+                else "Sin semilla: la seleccion varia en cada peticion."
+            ),
+        },
     }

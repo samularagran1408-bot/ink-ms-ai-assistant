@@ -18,13 +18,24 @@ agent = QuizAgent()
 
 
 class QuizGenerarBody(BaseModel):
+    """
+    /**
+     * Body para generar un quiz de aptitud.
+     */
+    """
     usuario_id: Optional[str] = None
     num_preguntas: int = Field(default=8, ge=5, le=15)
     dificultad: str = Field(default="media")
     semilla: Optional[int] = None
+    discipline_sport_ids: Optional[list[int]] = None
 
 
 class QuizEvaluarBody(BaseModel):
+    """
+    /**
+     * Body para evaluar las respuestas de un quiz previamente generado.
+     */
+    """
     usuario_id: Optional[str] = None
     quiz_id: str
     respuestas: list[QuizRespuestaItem]
@@ -32,8 +43,12 @@ class QuizEvaluarBody(BaseModel):
 
 
 async def _generar(rol: str, request: QuizGenerarBody, authorization: Optional[str]):
+    """
+    /**
+     * Resuelve el usuario autenticado y delega la generación al QuizAgent.
+     */
+    """
     ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
-    # Cualquier usuario autenticado puede hacer el quiz de aptitud para ese rol
     try:
         return await agent.generar(
             rol,
@@ -42,6 +57,7 @@ async def _generar(rol: str, request: QuizGenerarBody, authorization: Optional[s
             request.dificultad,
             request.semilla,
             ctx.authorization,
+            request.discipline_sport_ids,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -50,6 +66,11 @@ async def _generar(rol: str, request: QuizGenerarBody, authorization: Optional[s
 
 
 async def _evaluar(rol: str, request: QuizEvaluarBody, authorization: Optional[str]):
+    """
+    /**
+     * Resuelve el usuario autenticado y delega la evaluación al QuizAgent.
+     */
+    """
     ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
     try:
         return await agent.evaluar(
@@ -70,6 +91,11 @@ async def _evaluar(rol: str, request: QuizEvaluarBody, authorization: Optional[s
 async def generar_quiz_organizador(
     request: QuizGenerarBody, authorization: Optional[str] = Header(None)
 ):
+    """
+    /**
+     * Endpoint: genera el quiz de aptitud para ORGANIZADOR.
+     */
+    """
     return await _generar("ORGANIZADOR", request, authorization)
 
 
@@ -77,6 +103,11 @@ async def generar_quiz_organizador(
 async def generar_quiz_entrenador(
     request: QuizGenerarBody, authorization: Optional[str] = Header(None)
 ):
+    """
+    /**
+     * Endpoint: genera el quiz de aptitud para ENTRENADOR.
+     */
+    """
     return await _generar("ENTRENADOR", request, authorization)
 
 
@@ -84,6 +115,11 @@ async def generar_quiz_entrenador(
 async def evaluar_quiz_organizador(
     request: QuizEvaluarBody, authorization: Optional[str] = Header(None)
 ):
+    """
+    /**
+     * Endpoint: evalúa el quiz de ORGANIZADOR y registra el score en users.
+     */
+    """
     return await _evaluar("ORGANIZADOR", request, authorization)
 
 
@@ -91,4 +127,9 @@ async def evaluar_quiz_organizador(
 async def evaluar_quiz_entrenador(
     request: QuizEvaluarBody, authorization: Optional[str] = Header(None)
 ):
+    """
+    /**
+     * Endpoint: evalúa el quiz de ENTRENADOR y registra el score en users.
+     */
+    """
     return await _evaluar("ENTRENADOR", request, authorization)

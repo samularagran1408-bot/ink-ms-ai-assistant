@@ -11,7 +11,8 @@ from app.nlp.texto import normalizar, raiz, tokenizar
 
 PESO_FRASE = 3.0
 PESO_PALABRA = 1.0
-UMBRAL_CONFIANZA = 0.34
+# Un poco más permisivo: si no hay match fuerte, el chat usa el LLM conversacional
+UMBRAL_CONFIANZA = 0.38
 
 
 @dataclass(frozen=True)

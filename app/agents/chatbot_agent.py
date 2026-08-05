@@ -27,8 +27,13 @@ from app.services.user_service import UserService
 
 _ROTACION: dict[tuple[str, str], int] = {}
 UMBRAL_CANDIDATO = 0.18
-# Intenciones sociales: no merecen gastar tokens en reescritura
-_SIN_SINTESIS = frozenset({"saludo", "despedida", "agradecimiento", "ayuda"})
+# Cortesía: respuesta local corta basta
+_SOCIAL = frozenset({"saludo", "despedida", "agradecimiento"})
+# Intenciones que disparan herramientas con datos reales
+_CON_HERRAMIENTA = frozenset({
+    "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
+    "discapacidades", "adaptaciones", "quiz",
+})
 
 
 class ChatbotAgent:
@@ -39,6 +44,73 @@ class ChatbotAgent:
         self.conversaciones = ConversacionService()
 
     # ------------------------------------------------------------------ público
+
+    async def _resolver_turno(
+        self,
+        usuario_id: str,
+        mensaje: str,
+        clave_discapacidad: str,
+        authorization: Optional[str],
+        historial_llm: list[dict[str, str]],
+        clasificacion: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Decide motor local / herramienta / LLM conversacional."""
+        intencion = clasificacion["nombre"]
+
+        # 1) Social → plantillas locales (rápido, sin tokens)
+        if intencion in _SOCIAL:
+            return await self._responder_conocido(
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+            )
+
+        # 2) Herramienta clara → datos reales + pulido LLM si hay
+        if intencion in _CON_HERRAMIENTA:
+            resultado = await self._responder_conocido(
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+            )
+            return await self._sintetizar_como_agente(
+                mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
+            )
+
+        # 3) Resto (FAQ, dudas, desconocido): chatbot LLM con contexto
+        borrador = None
+        if intencion:
+            local = await self._responder_conocido(
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+            )
+            borrador = local.get("respuesta")
+            sugerencias = local.get("sugerencias") or []
+        else:
+            sugerencias = [
+                "¿Quieres que te prepare una rutina adaptada?",
+                "Puedo mostrarte los eventos compatibles con tu perfil",
+            ]
+
+        conversacional = await self._responder_conversacional(
+            mensaje,
+            clave_discapacidad,
+            authorization,
+            historial_llm,
+            borrador=borrador,
+            intencion_hint=intencion or clasificacion.get("mejor_candidato"),
+        )
+        if conversacional:
+            conversacional["sugerencias"] = conversacional.get("sugerencias") or sugerencias
+            return conversacional
+
+        # 4) Sin LLM: plantilla / aproximación / no_entendido
+        if intencion:
+            return await self._responder_conocido(
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+            )
+        return await self._responder_desconocido(
+            usuario_id,
+            mensaje,
+            clave_discapacidad,
+            clasificacion,
+            authorization,
+            historial_llm,
+        )
 
     async def procesar_mensaje(
         self,
@@ -59,25 +131,16 @@ class ChatbotAgent:
         clasificacion = clasificar(mensaje)
         intencion = clasificacion["nombre"]
 
-        if intencion:
-            resultado = await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje
-            )
-        else:
-            resultado = await self._responder_desconocido(
-                usuario_id,
-                mensaje,
-                clave_discapacidad,
-                clasificacion,
-                authorization,
-                historial_llm,
-            )
-
-        resultado = await self._sintetizar_como_agente(
-            mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
+        resultado = await self._resolver_turno(
+            usuario_id,
+            mensaje,
+            clave_discapacidad,
+            authorization,
+            historial_llm,
+            clasificacion,
         )
 
-        resultado["intencion"] = resultado.get("intencion") or intencion or "no_entendido"
+        resultado["intencion"] = resultado.get("intencion") or intencion or "general"
         resultado["confianza"] = clasificacion["confianza"]
         resultado["terminos_detectados"] = clasificacion["terminos"]
         resultado["conversacion_id"] = conversacion_id
@@ -110,30 +173,25 @@ class ChatbotAgent:
         clasificacion = clasificar(mensaje)
         intencion = clasificacion["nombre"]
 
-        if intencion:
+        if intencion in _CON_HERRAMIENTA:
             yield {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
-            resultado = await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje
-            )
-            yield {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
+        elif self.llm.disponible and intencion not in _SOCIAL:
+            yield {"evento": "estado", "detalle": "redactando_respuesta"}
         else:
             yield {"evento": "estado", "detalle": "consultando_conocimiento"}
-            resultado = await self._responder_desconocido(
-                usuario_id,
-                mensaje,
-                clave_discapacidad,
-                clasificacion,
-                authorization,
-                historial_llm,
-            )
 
-        if self._debe_sintetizar(resultado, clasificacion):
-            yield {"evento": "estado", "detalle": "redactando_respuesta"}
-        resultado = await self._sintetizar_como_agente(
-            mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
+        resultado = await self._resolver_turno(
+            usuario_id,
+            mensaje,
+            clave_discapacidad,
+            authorization,
+            historial_llm,
+            clasificacion,
         )
+        if intencion in _CON_HERRAMIENTA:
+            yield {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
 
-        resultado["intencion"] = resultado.get("intencion") or intencion or "no_entendido"
+        resultado["intencion"] = resultado.get("intencion") or intencion or "general"
         resultado["confianza"] = clasificacion["confianza"]
         resultado["terminos_detectados"] = clasificacion["terminos"]
         resultado["conversacion_id"] = conversacion_id
@@ -186,6 +244,69 @@ class ChatbotAgent:
             "herramientas_usadas": [accion] if accion else [],
         }
 
+    async def _responder_conversacional(
+        self,
+        mensaje: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        historial: list[dict[str, str]],
+        *,
+        borrador: Optional[str] = None,
+        intencion_hint: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Chat normal con LLM: responde casi cualquier pregunta con contexto real."""
+        if not self.llm.disponible:
+            return None
+
+        contexto = await self._contexto_plataforma(authorization)
+        pista = ""
+        if borrador:
+            pista = (
+                f"\n\nNotas internas de la plataforma (úsalas si aportan, "
+                f"no las copies literales):\n{borrador[:900]}"
+            )
+        hint = f"\nIntención probable: {intencion_hint}." if intencion_hint else ""
+
+        mensajes = [
+            {
+                "role": "system",
+                "content": system_prompt(
+                    discapacidad,
+                    "Actúa como un chatbot conversacional útil: responde la pregunta "
+                    "del usuario aunque no sea solo de deporte. Sé natural, breve y "
+                    "varía el estilo. Si puedes enlazar con entrenamiento inclusivo o "
+                    "eventos de InkluSport, hazlo al final sin forzar.",
+                ),
+            },
+            *historial,
+            {
+                "role": "user",
+                "content": (
+                    f"Mensaje del usuario: «{mensaje}»{hint}\n\n"
+                    f"Datos reales de InkluSport ahora mismo:\n{contexto}"
+                    f"{pista}\n\n"
+                    "Responde en español, máximo 6 frases, sin Markdown. "
+                    "No digas que no entiendes si puedes dar una respuesta razonable. "
+                    "No inventes eventos, deportes ni cupos: solo los del contexto. "
+                    "Si falta un dato, dilo y ofrece el siguiente paso "
+                    "(rutina, eventos, adaptaciones o quiz)."
+                ),
+            },
+        ]
+        texto = await self.llm.texto_mensajes(mensajes, temperatura=0.75)
+        if not texto:
+            return None
+        return {
+            "respuesta": texto,
+            "intencion": intencion_hint or "general",
+            "adaptada": discapacidad != "general",
+            "sugerencias": [],
+            "datos": {"contexto_usado": True, "modo": "conversacional"},
+            "fuente": "agente",
+            "herramientas_usadas": ["catalogo_plataforma"],
+            "sintesis_llm": True,
+        }
+
     async def _responder_desconocido(
         self,
         usuario_id: str,
@@ -195,36 +316,15 @@ class ChatbotAgent:
         authorization: Optional[str],
         historial: list[dict[str, str]],
     ) -> dict[str, Any]:
-        contexto = await self._contexto_plataforma(authorization)
-        mensajes = [
-            {"role": "system", "content": system_prompt(discapacidad)},
-            *historial,
-            {
-                "role": "user",
-                "content": (
-                    f"Pregunta del usuario: «{mensaje}»\n\n"
-                    f"Datos reales de la plataforma ahora mismo:\n{contexto}\n\n"
-                    "Responde en un máximo de 5 frases. Si la pregunta es sobre deporte, "
-                    "entrenamiento, salud, eventos o accesibilidad, apóyate en esos datos "
-                    "y no inventes eventos ni deportes. Si es general, contéstala breve y "
-                    "correcta, y ofrece ayuda con entrenamiento o eventos."
-                ),
-            },
-        ]
-        texto = await self.llm.texto_mensajes(mensajes)
-        if texto:
-            return {
-                "respuesta": texto,
-                "intencion": "general",
-                "adaptada": discapacidad != "general",
-                "sugerencias": [
-                    "¿Quieres que te prepare una rutina adaptada?",
-                    "Puedo mostrarte los eventos compatibles con tu perfil",
-                ],
-                "datos": {"contexto_usado": True},
-                "fuente": "agente",
-                "herramientas_usadas": ["catalogo_plataforma"],
-            }
+        conversacional = await self._responder_conversacional(
+            mensaje,
+            discapacidad,
+            authorization,
+            historial,
+            intencion_hint=clasificacion.get("mejor_candidato"),
+        )
+        if conversacional:
+            return conversacional
 
         candidato = clasificacion.get("mejor_candidato")
         if candidato and clasificacion["confianza"] >= UMBRAL_CANDIDATO:
@@ -261,11 +361,26 @@ class ChatbotAgent:
         historial: list[dict[str, str]],
         clasificacion: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        """Pule la respuesta del motor local solo cuando el gate lo permite."""
-        if not self._debe_sintetizar(resultado, clasificacion or {}):
+        """Pule respuestas con herramientas para que suenen a chatbot, no a plantilla."""
+        if resultado.get("fuente") == "agente":
+            return resultado
+        if not self.llm.disponible:
             resultado = dict(resultado)
             resultado.setdefault("sintesis_llm", False)
             return resultado
+
+        intencion = (resultado.get("intencion") or "").lower()
+        if intencion in _SOCIAL:
+            resultado = dict(resultado)
+            resultado["sintesis_llm"] = False
+            return resultado
+
+        # Por defecto pulimos herramientas; las FAQ ya van por _responder_conversacional
+        if intencion not in _CON_HERRAMIENTA and not settings.LLM_SINTESIS_INTENIONES_CONOCIDAS:
+            if not resultado.get("aproximada"):
+                resultado = dict(resultado)
+                resultado["sintesis_llm"] = False
+                return resultado
 
         borrador = resultado.get("respuesta") or ""
         datos = resultado.get("datos")
@@ -281,13 +396,14 @@ class ChatbotAgent:
                     f"Herramientas usadas: {', '.join(herramientas) or 'ninguna'}\n"
                     f"Datos estructurados: {datos}\n\n"
                     f"Borrador del motor local:\n{borrador}\n\n"
-                    "Reescribe la respuesta como agente profesional de InkluSport: natural, "
-                    "concreta y útil. Conserva todos los hechos del borrador y de los datos "
-                    "(nombres, fechas, cupos). Máximo 6 frases. No inventes nada nuevo."
+                    "Reescribe como chatbot natural de InkluSport: cercano, concreto y "
+                    "sin sonar a plantilla repetida. Conserva todos los hechos del borrador "
+                    "y de los datos (nombres, fechas, cupos). Máximo 6 frases. "
+                    "No inventes nada nuevo."
                 ),
             },
         ]
-        pulido = await self.llm.texto_mensajes(mensajes, temperatura=0.5)
+        pulido = await self.llm.texto_mensajes(mensajes, temperatura=0.65)
         if not pulido:
             resultado = dict(resultado)
             resultado["sintesis_llm"] = False
@@ -299,28 +415,6 @@ class ChatbotAgent:
         resultado["borrador_motor"] = borrador
         resultado["sintesis_llm"] = True
         return resultado
-
-    def _debe_sintetizar(
-        self, resultado: dict[str, Any], clasificacion: dict[str, Any]
-    ) -> bool:
-        """Evita quemar tokens en saludos y respuestas ya resueltas por el motor."""
-        if resultado.get("fuente") == "agente":
-            return False
-        if not self.llm.disponible:
-            return False
-
-        intencion = (resultado.get("intencion") or "").lower()
-        if intencion in _SIN_SINTESIS:
-            return False
-
-        # Por defecto no reescribimos intenciones conocidas (motor local basta).
-        if intencion and intencion not in ("no_entendido", "general"):
-            if not settings.LLM_SINTESIS_INTENIONES_CONOCIDAS:
-                # Excepción: aproximación débil del clasificador
-                if not resultado.get("aproximada"):
-                    return False
-
-        return True
 
     async def _contexto_plataforma(self, authorization: Optional[str]) -> str:
         try:
