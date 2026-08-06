@@ -68,9 +68,8 @@ PERFILES: dict[str, dict[str, Any]] = {
         "nombre": "openrouter",
         "dominio": "openrouter.ai",
         "url": "https://openrouter.ai/api/v1/chat/completions",
-        # Gratuito, instruction-tuned y con buen español. La lista de modelos
-        # gratuitos cambia con el tiempo: se puede sustituir con LLM_MODEL.
-        "modelo": "google/gemma-4-31b-it:free",
+        # Enruta entre modelos :free; evita clavar uno saturado (p. ej. Gemma 429).
+        "modelo": "openrouter/free",
         # Aquí los modelos se nombran "proveedor/modelo".
         "modelo_valido": lambda m: "/" in m,
     },
@@ -112,9 +111,25 @@ _SIN_CLAVE = ("ollama",)
 
 _ANFITRIONES_LOCALES = ("ollama", "localhost", "127.0.0.1", "host.docker.internal", ":11434")
 
+# Si el modelo free elegido está saturado upstream (429), se prueba esta lista.
+# `openrouter/free` ya reparte entre free; los demás son respaldo explícito.
+_FALLBACKS_OPENROUTER = (
+    "openrouter/free",
+    "openai/gpt-oss-20b:free",
+    "nvidia/nemotron-nano-9b-v2:free",
+    "inclusionai/ling-3.0-flash:free",
+)
+
 
 def _es_url_local(url: str) -> bool:
     return bool(url) and any(a in url for a in _ANFITRIONES_LOCALES)
+
+
+def _es_rate_limit(status: int, cuerpo: str) -> bool:
+    if status == 429:
+        return True
+    bajo = (cuerpo or "").lower()
+    return "rate-limited" in bajo or "rate limit" in bajo
 
 
 class LLMService:
@@ -206,6 +221,14 @@ class LLMService:
             temperatura=temperatura,
         )
 
+    def _modelos_a_probar(self) -> list[str]:
+        """Modelo configurado primero; en OpenRouter, fallbacks si hay 429 upstream."""
+        primario = self.model
+        if self.proveedor != "openrouter" or not primario:
+            return [primario] if primario else []
+        extras = [m for m in _FALLBACKS_OPENROUTER if m != primario]
+        return [primario, *extras]
+
     async def chat_mensajes(
         self,
         mensajes: list[dict[str, str]],
@@ -225,34 +248,53 @@ class LLMService:
                 f"LLM en pausa {restante}s tras un fallo previo: {LLMService._ultimo_error}"
             )
 
-        payload = {
-            "messages": mensajes,
-            "model": self.model,
-            "temperature": temperatura,
-            "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
-        }
         headers = self._headers()
+        ultimo_error = ""
+        modelos = self._modelos_a_probar()
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                respuesta = await client.post(self.api_url, headers=headers, json=payload)
-        except Exception as exc:
-            self._registrar_fallo(f"{type(exc).__name__}: {exc}")
-            raise RuntimeError(f"LLM inaccesible: {exc}") from exc
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for i, modelo in enumerate(modelos):
+                payload = {
+                    "messages": mensajes,
+                    "model": modelo,
+                    "temperature": temperatura,
+                    "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
+                }
+                try:
+                    respuesta = await client.post(
+                        self.api_url, headers=headers, json=payload
+                    )
+                except Exception as exc:
+                    self._registrar_fallo(f"{type(exc).__name__}: {exc}")
+                    raise RuntimeError(f"LLM inaccesible: {exc}") from exc
 
-        if respuesta.status_code >= 400:
-            detalle = respuesta.text[:300]
-            self._registrar_fallo(f"HTTP {respuesta.status_code}: {detalle}")
-            raise RuntimeError(f"LLM HTTP {respuesta.status_code}: {detalle}")
+                if respuesta.status_code < 400:
+                    try:
+                        contenido = respuesta.json()["choices"][0]["message"]["content"]
+                    except Exception as exc:
+                        self._registrar_fallo(f"Respuesta inesperada: {exc}")
+                        raise RuntimeError(
+                            f"Respuesta del LLM no interpretable: {exc}"
+                        ) from exc
+                    self._registrar_exito()
+                    if modelo != self.model:
+                        print(f"LLM: {self.model} falló; respondió {modelo}")
+                    return contenido
 
-        try:
-            contenido = respuesta.json()["choices"][0]["message"]["content"]
-        except Exception as exc:
-            self._registrar_fallo(f"Respuesta inesperada: {exc}")
-            raise RuntimeError(f"Respuesta del LLM no interpretable: {exc}") from exc
+                detalle = respuesta.text[:300]
+                ultimo_error = f"HTTP {respuesta.status_code}: {detalle}"
+                # Rate limit / saturación upstream: probar otro modelo free.
+                if (
+                    _es_rate_limit(respuesta.status_code, detalle)
+                    and i < len(modelos) - 1
+                ):
+                    print(f"LLM {modelo} rate-limited; probando alternativa...")
+                    continue
+                self._registrar_fallo(ultimo_error)
+                raise RuntimeError(f"LLM {ultimo_error}")
 
-        self._registrar_exito()
-        return contenido
+        self._registrar_fallo(ultimo_error or "sin modelos")
+        raise RuntimeError(f"LLM {ultimo_error or 'sin respuesta'}")
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -313,10 +355,19 @@ class LLMService:
         return datos if isinstance(datos, dict) else None
 
     async def precalentar(self) -> bool:
-        """Fuerza la carga del modelo en memoria para que la primera consulta real
-        del usuario no pague el arranque en frío (relevante en Ollama sobre CPU)."""
+        """Fuerza la carga del modelo en memoria (útil en Ollama/CPU).
+
+        En proveedores cloud (OpenRouter, etc.) se omite: quema cuota free y un
+        429 al arranque deja el cortacircuitos activo sin beneficio.
+        """
         if not self.is_configured:
             return False
+        if self.requiere_clave:
+            print(
+                f"LLM cloud ({self.proveedor}): sin precalentar; "
+                "la primera petición real validará el proveedor"
+            )
+            return True
         try:
             await self.chat("Responde solo: ok", "general", temperatura=0.0)
         except Exception as exc:
@@ -330,16 +381,19 @@ class LLMService:
         pausa = max(0, int(cls._bloqueado_hasta - time.monotonic()))
 
         # "configurado" sólo dice que hay URL, modelo y clave si hace falta; no que
-        # el proveedor responda. Se distingue para que el diagnóstico no prometa un
-        # LLM que en realidad está inaccesible.
-        if cls._llamadas_ok:
-            contactado = cls._ultimo_error is None
-        elif cls._llamadas_fallidas:
+        # el proveedor responda. Tras el cooldown se permite reintentar aunque el
+        # último contacto haya fallado (p. ej. 429 temporal de un modelo free).
+        if cls._llamadas_ok and cls._ultimo_error is None:
+            contactado: Optional[bool] = True
+        elif pausa > 0:
             contactado = False
+        elif cls._llamadas_fallidas:
+            # Cooldown ya pasó: listo para reintentar en la próxima petición.
+            contactado = None
         else:
             contactado = None
 
-        operativo = instancia.disponible and contactado is not False
+        operativo = instancia.disponible and pausa == 0
         return {
             "habilitado": instancia.habilitado,
             "proveedor": instancia.proveedor,

@@ -67,6 +67,10 @@ async def _precalentar_llm() -> None:
     llm = LLMService()
     if not llm.is_configured:
         return
+    # En cloud no se precalienta (cuota / 429 al arranque). En Ollama sí.
+    if llm.requiere_clave:
+        await llm.precalentar()
+        return
     print(f"Precalentando el modelo {llm.model}...")
     if await llm.precalentar():
         print(f"Modelo {llm.model} listo y cargado en memoria")
