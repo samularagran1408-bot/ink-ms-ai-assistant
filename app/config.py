@@ -79,6 +79,10 @@ class Settings:
     # por el motor local (más tokens). Por defecto solo pulimos casos difíciles.
     LLM_SINTESIS_INTENIONES_CONOCIDAS = _bool("LLM_SINTESIS_INTENIONES_CONOCIDAS", False)
 
+    # Tool-calling estilo OpenAI/MCP: el LLM elige tools; si falla → motor local.
+    LLM_TOOL_CALLING_ENABLED = _bool("LLM_TOOL_CALLING_ENABLED", True)
+    LLM_TOOL_MAX_RONDAS = _int("LLM_TOOL_MAX_RONDAS", 2)
+
     # Historial de chat: anti-basura en Mongo y en el prompt del LLM
     CHAT_MAX_MENSAJES_POR_CONVERSACION = _int("CHAT_MAX_MENSAJES_POR_CONVERSACION", 40)
     CHAT_MAX_CONVERSACIONES_POR_USUARIO = _int("CHAT_MAX_CONVERSACIONES_POR_USUARIO", 10)

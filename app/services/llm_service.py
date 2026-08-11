@@ -15,11 +15,25 @@ no añade latencia a cada petición.
 import json
 import re
 import time
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import httpx
 
 from app.config import settings
+
+
+@dataclass
+class ChatCompletionResult:
+    """Respuesta de /chat/completions (texto y/o tool_calls)."""
+
+    content: Optional[str] = None
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    modelo_usado: Optional[str] = None
+
+    @property
+    def tiene_tools(self) -> bool:
+        return bool(self.tool_calls)
 
 CONTEXTO_DISCAPACIDAD = {
     "visual": "Describe todo verbalmente. Evita referencias como 'mira' u 'observa'.",
@@ -132,6 +146,23 @@ def _es_rate_limit(status: int, cuerpo: str) -> bool:
     return "rate-limited" in bajo or "rate limit" in bajo
 
 
+def _es_tools_no_soportado(status: int, cuerpo: str) -> bool:
+    """Algunos modelos free rechazan el campo tools con 400/404."""
+    if status not in (400, 404, 422):
+        return False
+    bajo = (cuerpo or "").lower()
+    return any(
+        t in bajo
+        for t in (
+            "tool",
+            "function calling",
+            "functions are not supported",
+            "does not support",
+            "unsupported",
+        )
+    )
+
+
 class LLMService:
     # Estado compartido por todas las instancias (una por agente)
     _bloqueado_hasta: float = 0.0
@@ -229,13 +260,7 @@ class LLMService:
         extras = [m for m in _FALLBACKS_OPENROUTER if m != primario]
         return [primario, *extras]
 
-    async def chat_mensajes(
-        self,
-        mensajes: list[dict[str, str]],
-        temperatura: float = 0.7,
-        max_tokens: Optional[int] = None,
-    ) -> str:
-        """Consulta al LLM con una lista completa de mensajes (historial + system)."""
+    def _validar_listo(self) -> None:
         if not self.habilitado:
             raise RuntimeError("LLM deshabilitado (LLM_ENABLED=false)")
         if self.requiere_clave and not self.api_key:
@@ -248,18 +273,67 @@ class LLMService:
                 f"LLM en pausa {restante}s tras un fallo previo: {LLMService._ultimo_error}"
             )
 
+    @staticmethod
+    def _parsear_mensaje(mensaje: dict[str, Any]) -> ChatCompletionResult:
+        contenido = mensaje.get("content")
+        if isinstance(contenido, list):
+            # Algunos proveedores devuelven content como lista de bloques
+            partes = []
+            for bloque in contenido:
+                if isinstance(bloque, dict) and bloque.get("type") == "text":
+                    partes.append(str(bloque.get("text") or ""))
+                elif isinstance(bloque, str):
+                    partes.append(bloque)
+            contenido = "\n".join(p for p in partes if p) or None
+        elif contenido is not None:
+            contenido = str(contenido)
+
+        tool_calls_raw = mensaje.get("tool_calls") or []
+        tool_calls: list[dict[str, Any]] = []
+        for tc in tool_calls_raw:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            tool_calls.append(
+                {
+                    "id": tc.get("id") or f"call_{len(tool_calls)}",
+                    "type": tc.get("type") or "function",
+                    "function": {
+                        "name": (fn.get("name") or "").strip(),
+                        "arguments": fn.get("arguments") or "{}",
+                    },
+                }
+            )
+        return ChatCompletionResult(content=contenido, tool_calls=tool_calls)
+
+    async def completar(
+        self,
+        mensajes: list[dict[str, Any]],
+        *,
+        temperatura: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+    ) -> ChatCompletionResult:
+        """Llama al proveedor y devuelve texto y/o tool_calls."""
+        self._validar_listo()
         headers = self._headers()
         ultimo_error = ""
         modelos = self._modelos_a_probar()
+        usar_tools = bool(tools)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for i, modelo in enumerate(modelos):
-                payload = {
+                payload: dict[str, Any] = {
                     "messages": mensajes,
                     "model": modelo,
                     "temperature": temperatura,
                     "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
                 }
+                if usar_tools:
+                    payload["tools"] = tools
+                    payload["tool_choice"] = tool_choice or "auto"
+
                 try:
                     respuesta = await client.post(
                         self.api_url, headers=headers, json=payload
@@ -270,20 +344,25 @@ class LLMService:
 
                 if respuesta.status_code < 400:
                     try:
-                        contenido = respuesta.json()["choices"][0]["message"]["content"]
+                        mensaje = respuesta.json()["choices"][0]["message"]
+                        resultado = self._parsear_mensaje(mensaje)
                     except Exception as exc:
                         self._registrar_fallo(f"Respuesta inesperada: {exc}")
                         raise RuntimeError(
                             f"Respuesta del LLM no interpretable: {exc}"
                         ) from exc
+                    resultado.modelo_usado = modelo
                     self._registrar_exito()
                     if modelo != self.model:
                         print(f"LLM: {self.model} falló; respondió {modelo}")
-                    return contenido
+                    return resultado
 
                 detalle = respuesta.text[:300]
                 ultimo_error = f"HTTP {respuesta.status_code}: {detalle}"
-                # Rate limit / saturación upstream: probar otro modelo free.
+                # Modelo sin soporte de tools: no activar cortacircuitos global
+                # (el chat puede seguir usando LLM sin tools / motor local).
+                if usar_tools and _es_tools_no_soportado(respuesta.status_code, detalle):
+                    raise RuntimeError(f"LLM sin soporte de tools: {ultimo_error}")
                 if (
                     _es_rate_limit(respuesta.status_code, detalle)
                     and i < len(modelos) - 1
@@ -295,6 +374,30 @@ class LLMService:
 
         self._registrar_fallo(ultimo_error or "sin modelos")
         raise RuntimeError(f"LLM {ultimo_error or 'sin respuesta'}")
+
+    async def chat_mensajes(
+        self,
+        mensajes: list[dict[str, Any]],
+        temperatura: float = 0.7,
+        max_tokens: Optional[int] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
+    ) -> str:
+        """Consulta al LLM; si hay tools, ignora tool_calls y solo devuelve texto."""
+        resultado = await self.completar(
+            mensajes,
+            temperatura=temperatura,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+        if resultado.content:
+            return resultado.content
+        if resultado.tiene_tools:
+            raise RuntimeError(
+                "El modelo devolvió tool_calls sin texto; usa completar() en el orquestador"
+            )
+        return ""
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -324,7 +427,7 @@ class LLMService:
 
     async def texto_mensajes(
         self,
-        mensajes: list[dict[str, str]],
+        mensajes: list[dict[str, Any]],
         temperatura: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> Optional[str]:
@@ -409,6 +512,10 @@ class LLMService:
             "llamadas_fallidas": cls._llamadas_fallidas,
             "ultimo_error": cls._ultimo_error,
             "modo": "llm+motor_local" if operativo else "motor_local",
+            "tool_calling": {
+                "habilitado": settings.LLM_TOOL_CALLING_ENABLED,
+                "max_rondas": settings.LLM_TOOL_MAX_RONDAS,
+            },
         }
 
 

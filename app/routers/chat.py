@@ -94,6 +94,8 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
             "historial_turnos_contexto": resultado.get("historial_turnos_contexto"),
             "historial_con_resumen": resultado.get("historial_con_resumen"),
             "sintesis_llm": resultado.get("sintesis_llm"),
+            "tool_calling": resultado.get("tool_calling", False),
+            "modelo_llm": resultado.get("modelo_llm"),
             "session_id": cid,
         },
         herramientas_usadas=resultado.get("herramientas_usadas") or [],

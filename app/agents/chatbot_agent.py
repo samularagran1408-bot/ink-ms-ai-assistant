@@ -1,8 +1,8 @@
 """Agente conversacional profesional de InkluSport.
 
-Orquesta: clasificación local de intenciones → herramientas (eventos, rutinas,
-deportes, adaptaciones, quices) → síntesis con LLM + historial acotado cuando
-aporta. Sin LLM el motor local sigue respondiendo completo.
+Orquesta: clasificación local → (opcional) tool-calling LLM → herramientas
+locales (eventos, rutinas…) → síntesis. Sin LLM o sin soporte de tools, el
+motor local responde completo.
 
 El historial se persiste con cupos anti-basura (ver ConversacionService): el
 usuario puede recuperarlo por API; al LLM solo llegan resumen + últimos turnos.
@@ -10,6 +10,7 @@ usuario puede recuperarlo por API; al LLM solo llegan resumen + últimos turnos.
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, AsyncIterator, Optional
 
@@ -21,9 +22,14 @@ from app.motor.rutinas import generar_rutina
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
 from app.services.conversacion_service import ConversacionService
-from app.services.llm_service import LLMService, system_prompt
+from app.services.llm_service import LLMService, _limpiar, system_prompt
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
+from app.tools.registry import (
+    TOOL_DEFINITIONS,
+    accion_de_tool,
+    mensaje_tool_para_objetivo,
+)
 
 _ROTACION: dict[tuple[str, str], int] = {}
 UMBRAL_CANDIDATO = 0.18
@@ -34,6 +40,15 @@ _CON_HERRAMIENTA = frozenset({
     "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
     "discapacidades", "adaptaciones", "quiz",
 })
+
+_SISTEMA_TOOLS = (
+    "Puedes usar herramientas para obtener datos reales de InkluSport "
+    "(eventos, deportes, adaptaciones, rutinas, ejercicios, quiz). "
+    "Si la pregunta necesita datos de plataforma, llama a la herramienta "
+    "adecuada antes de responder. No inventes nombres, fechas ni cupos. "
+    "Cuando ya tengas los datos, responde en español, máximo 6 frases, "
+    "sin Markdown."
+)
 
 
 class ChatbotAgent:
@@ -51,10 +66,12 @@ class ChatbotAgent:
         mensaje: str,
         clave_discapacidad: str,
         authorization: Optional[str],
-        historial_llm: list[dict[str, str]],
+        historial_llm: list[dict[str, Any]],
         clasificacion: dict[str, Any],
+        *,
+        eventos: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
-        """Decide motor local / herramienta / LLM conversacional."""
+        """Decide tool-calling / motor local / LLM conversacional."""
         intencion = clasificacion["nombre"]
 
         # 1) Social → plantillas locales (rápido, sin tokens)
@@ -63,16 +80,38 @@ class ChatbotAgent:
                 usuario_id, intencion, clave_discapacidad, authorization, mensaje
             )
 
-        # 2) Herramienta clara → datos reales + pulido LLM si hay
+        # 2) Tool-calling LLM (estilo MCP) cuando está habilitado
+        if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible:
+            con_tools = await self._responder_con_tools(
+                mensaje,
+                clave_discapacidad,
+                authorization,
+                historial_llm,
+                usuario_id,
+                intencion_hint=intencion or clasificacion.get("mejor_candidato"),
+                eventos=eventos,
+            )
+            if con_tools:
+                return con_tools
+
+        # 3) Herramienta clara → datos reales + pulido LLM si hay
         if intencion in _CON_HERRAMIENTA:
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
+                )
             resultado = await self._responder_conocido(
                 usuario_id, intencion, clave_discapacidad, authorization, mensaje
             )
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
+                )
             return await self._sintetizar_como_agente(
                 mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
             )
 
-        # 3) Resto (FAQ, dudas, desconocido): chatbot LLM con contexto
+        # 4) Resto (FAQ, dudas, desconocido): chatbot LLM con contexto
         borrador = None
         if intencion:
             local = await self._responder_conocido(
@@ -98,7 +137,7 @@ class ChatbotAgent:
             conversacional["sugerencias"] = conversacional.get("sugerencias") or sugerencias
             return conversacional
 
-        # 4) Sin LLM: plantilla / aproximación / no_entendido
+        # 5) Sin LLM: plantilla / aproximación / no_entendido
         if intencion:
             return await self._responder_conocido(
                 usuario_id, intencion, clave_discapacidad, authorization, mensaje
@@ -173,13 +212,16 @@ class ChatbotAgent:
         clasificacion = clasificar(mensaje)
         intencion = clasificacion["nombre"]
 
-        if intencion in _CON_HERRAMIENTA:
+        if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
+            yield {"evento": "estado", "detalle": "agente_con_tools"}
+        elif intencion in _CON_HERRAMIENTA:
             yield {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
         elif self.llm.disponible and intencion not in _SOCIAL:
             yield {"evento": "estado", "detalle": "redactando_respuesta"}
         else:
             yield {"evento": "estado", "detalle": "consultando_conocimiento"}
 
+        eventos_side: list[dict[str, Any]] = []
         resultado = await self._resolver_turno(
             usuario_id,
             mensaje,
@@ -187,9 +229,10 @@ class ChatbotAgent:
             authorization,
             historial_llm,
             clasificacion,
+            eventos=eventos_side,
         )
-        if intencion in _CON_HERRAMIENTA:
-            yield {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
+        for ev in eventos_side:
+            yield ev
 
         resultado["intencion"] = resultado.get("intencion") or intencion or "general"
         resultado["confianza"] = clasificacion["confianza"]
@@ -204,6 +247,215 @@ class ChatbotAgent:
         )
         yield {"evento": "respuesta", "datos": resultado}
         yield {"evento": "fin", "conversacion_id": conversacion_id}
+
+    # ---------------------------------------------------------- tool-calling
+
+    async def _responder_con_tools(
+        self,
+        mensaje: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        historial: list[dict[str, Any]],
+        usuario_id: str,
+        *,
+        intencion_hint: Optional[str] = None,
+        eventos: Optional[list[dict[str, Any]]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Loop LLM ↔ tools. Devuelve None para caer al motor local."""
+        if not self.llm.disponible:
+            return None
+
+        hint = (
+            f" Intención probable del clasificador local: {intencion_hint}."
+            if intencion_hint
+            else ""
+        )
+        mensajes: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt(discapacidad, _SISTEMA_TOOLS)},
+            *historial,
+            {
+                "role": "user",
+                "content": (
+                    f"Mensaje del usuario: «{mensaje}».{hint} "
+                    "Usa herramientas si necesitas datos reales de la plataforma."
+                ),
+            },
+        ]
+
+        herramientas_usadas: list[str] = []
+        datos_acumulados: dict[str, Any] = {"modo": "tool_calling", "rondas": []}
+        max_rondas = max(1, settings.LLM_TOOL_MAX_RONDAS)
+
+        try:
+            for ronda in range(max_rondas):
+                resultado_llm = await self.llm.completar(
+                    mensajes,
+                    temperatura=0.4,
+                    tools=TOOL_DEFINITIONS,
+                    tool_choice="auto",
+                )
+
+                if resultado_llm.tiene_tools:
+                    mensajes.append(
+                        {
+                            "role": "assistant",
+                            "content": resultado_llm.content,
+                            "tool_calls": resultado_llm.tool_calls,
+                        }
+                    )
+                    for tc in resultado_llm.tool_calls:
+                        nombre = (tc.get("function") or {}).get("name") or ""
+                        raw_args = (tc.get("function") or {}).get("arguments") or "{}"
+                        try:
+                            args = (
+                                json.loads(raw_args)
+                                if isinstance(raw_args, str)
+                                else dict(raw_args)
+                            )
+                        except json.JSONDecodeError:
+                            args = {}
+                        if not isinstance(args, dict):
+                            args = {}
+
+                        if eventos is not None:
+                            eventos.append(
+                                {
+                                    "evento": "herramienta",
+                                    "detalle": nombre,
+                                    "estado": "ejecutando",
+                                    "ronda": ronda + 1,
+                                }
+                            )
+
+                        texto, datos = await self._ejecutar_tool(
+                            nombre,
+                            args,
+                            usuario_id,
+                            discapacidad,
+                            authorization,
+                            mensaje,
+                        )
+                        herramientas_usadas.append(nombre)
+                        datos_acumulados["rondas"].append(
+                            {"tool": nombre, "args": args, "ok": bool(texto or datos)}
+                        )
+                        if datos:
+                            datos_acumulados[nombre] = datos
+
+                        mensajes.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc.get("id") or f"call_{nombre}",
+                                "content": json.dumps(
+                                    {"texto": texto, "datos": datos},
+                                    ensure_ascii=False,
+                                    default=str,
+                                )[:6000],
+                            }
+                        )
+
+                        if eventos is not None:
+                            eventos.append(
+                                {
+                                    "evento": "herramienta",
+                                    "detalle": nombre,
+                                    "estado": "listo",
+                                    "ronda": ronda + 1,
+                                }
+                            )
+                    continue
+
+                texto_final = (resultado_llm.content or "").strip()
+                if not texto_final and herramientas_usadas:
+                    texto_final = await self._sintesis_tras_tools(
+                        mensaje, discapacidad, historial, datos_acumulados
+                    ) or ""
+                if not texto_final:
+                    return None
+
+                return {
+                    "respuesta": _limpiar(texto_final),
+                    "intencion": intencion_hint or "general",
+                    "adaptada": discapacidad != "general",
+                    "sugerencias": [],
+                    "datos": datos_acumulados,
+                    "fuente": "agente",
+                    "herramientas_usadas": herramientas_usadas or ["tool_calling"],
+                    "sintesis_llm": True,
+                    "tool_calling": True,
+                    "modelo_llm": resultado_llm.modelo_usado,
+                }
+
+            cierre = await self.llm.texto_mensajes(
+                [
+                    *mensajes,
+                    {
+                        "role": "user",
+                        "content": (
+                            "Con los resultados de las herramientas, responde ya "
+                            "al usuario en español, máximo 6 frases, sin Markdown."
+                        ),
+                    },
+                ],
+                temperatura=0.5,
+            )
+            if not cierre:
+                return None
+            return {
+                "respuesta": cierre,
+                "intencion": intencion_hint or "general",
+                "adaptada": discapacidad != "general",
+                "sugerencias": [],
+                "datos": datos_acumulados,
+                "fuente": "agente",
+                "herramientas_usadas": herramientas_usadas,
+                "sintesis_llm": True,
+                "tool_calling": True,
+            }
+        except Exception as exc:
+            print(f"Tool-calling no disponible, fallback motor local: {exc}")
+            return None
+
+    async def _ejecutar_tool(
+        self,
+        nombre: str,
+        args: dict[str, Any],
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje_usuario: str,
+    ) -> tuple[str, dict[str, Any]]:
+        accion = accion_de_tool(nombre)
+        if not accion:
+            return f"Herramienta desconocida: {nombre}", {"error": "tool_desconocida"}
+        mensaje = mensaje_tool_para_objetivo(nombre, args, mensaje_usuario)
+        return await self._enriquecer(
+            accion, usuario_id, discapacidad, authorization, mensaje
+        )
+
+    async def _sintesis_tras_tools(
+        self,
+        mensaje: str,
+        discapacidad: str,
+        historial: list[dict[str, Any]],
+        datos: dict[str, Any],
+    ) -> Optional[str]:
+        return await self.llm.texto_mensajes(
+            [
+                {"role": "system", "content": system_prompt(discapacidad)},
+                *historial,
+                {
+                    "role": "user",
+                    "content": (
+                        f"Mensaje: «{mensaje}»\n"
+                        f"Datos de herramientas: "
+                        f"{json.dumps(datos, ensure_ascii=False, default=str)[:3500]}\n"
+                        "Responde en español, máximo 6 frases, sin inventar datos."
+                    ),
+                },
+            ],
+            temperatura=0.5,
+        )
 
     # ---------------------------------------------------------------- redacción
 

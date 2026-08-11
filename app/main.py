@@ -36,6 +36,7 @@ from app.routers import (
     voz,
 )
 from app.services.llm_service import LLMService
+from app.tools.registry import nombres_tools
 
 
 @asynccontextmanager
@@ -140,13 +141,18 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "ink-ms-ai-assistant",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "auth": "Bearer JWT → GET /api/users/perfil (discapacidad y roles reales)",
         "agents": [
             "chatbot", "rutinas", "planes", "competencia", "recomendacion",
             "deportes", "riesgo", "historial", "dashboard", "alertas",
             "deteccion", "fatiga", "voz", "quiz",
         ],
+        "chat_tools": {
+            "estilo": "openai_tools",
+            "nombres": nombres_tools(),
+            "fallback": "motor_local",
+        },
         "rf_cubiertos": {
             "RF41": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar) — Ideal",
             "RF42": "POST /api/ai/riesgo/lesiones/{userId} (+ /riesgo/evaluar) — Ideal",
