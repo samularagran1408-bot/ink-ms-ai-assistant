@@ -36,6 +36,7 @@ from app.routers import (
     voz,
 )
 from app.services.llm_service import LLMService
+from app.tools.mcp import descripcion_protocolo
 from app.tools.registry import nombres_tools
 
 
@@ -153,6 +154,7 @@ async def health_check():
             "nombres": nombres_tools(),
             "fallback": "motor_local",
         },
+        "mcp": descripcion_protocolo(),
         "rf_cubiertos": {
             "RF41": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar) — Ideal",
             "RF42": "POST /api/ai/riesgo/lesiones/{userId} (+ /riesgo/evaluar) — Ideal",

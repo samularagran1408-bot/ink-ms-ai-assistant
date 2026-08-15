@@ -28,6 +28,14 @@ class ChatResponse(BaseModel):
     sugerencias: list[str] = Field(default_factory=list)
     datos: Optional[dict[str, Any]] = None
     herramientas_usadas: list[str] = Field(default_factory=list)
+    cards: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Hechos accionables (eventos, rutina, quiz) con CTA para el front",
+    )
+    mcp: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Metadatos del protocolo interno de tools (estilo MCP)",
+    )
 
 
 class Mensaje(BaseModel):

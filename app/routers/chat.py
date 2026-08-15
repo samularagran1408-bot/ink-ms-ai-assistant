@@ -10,6 +10,8 @@ from app.agents.chatbot_agent import ChatbotAgent
 from app.deps.contexto import discapacidad_efectiva, resolver_contexto
 from app.models.chat import ChatResponse
 from app.services.conversacion_service import ConversacionService
+from app.tools.cards import construir_cards
+from app.tools.mcp import descripcion_protocolo, mcp_del_turno
 
 router = APIRouter()
 agent = ChatbotAgent()
@@ -73,6 +75,15 @@ class ChatRequestAuth(BaseModel):
 
 def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatResponse:
     cid = resultado.get("conversacion_id") or request_hilo_id or "nueva"
+    herramientas = resultado.get("herramientas_usadas") or []
+    datos_crudos = resultado.get("datos") or {}
+    cards = construir_cards(datos_crudos, herramientas)
+    mcp = mcp_del_turno(
+        tool_calling=bool(resultado.get("tool_calling")),
+        herramientas_usadas=herramientas,
+        modelo=resultado.get("modelo_llm"),
+        fuente=resultado.get("fuente", "motor_local"),
+    )
     return ChatResponse(
         conversacion_id=cid,
         respuesta=resultado["respuesta"],
@@ -83,7 +94,7 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
         agente=resultado.get("agente", "inklusport-profesional"),
         sugerencias=resultado.get("sugerencias") or [],
         datos={
-            **(resultado.get("datos") or {}),
+            **datos_crudos,
             "usuario": {
                 "id": ctx.id,
                 "email": ctx.email,
@@ -97,8 +108,11 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
             "tool_calling": resultado.get("tool_calling", False),
             "modelo_llm": resultado.get("modelo_llm"),
             "session_id": cid,
+            "cards": cards,
         },
-        herramientas_usadas=resultado.get("herramientas_usadas") or [],
+        herramientas_usadas=herramientas,
+        cards=cards,
+        mcp=mcp,
     )
 
 
@@ -252,6 +266,13 @@ async def _nueva_sesion(authorization: Optional[str]):
             "para un hilo nuevo sin heredar el historial anterior."
         ),
     }
+
+
+@router.get("/mcp")
+async def describir_mcp(authorization: Optional[str] = Header(None)):
+    """Explica el protocolo interno de tools (estilo MCP) y lista las tools."""
+    await resolver_contexto(authorization, require_auth=True)
+    return descripcion_protocolo()
 
 
 @router.get("/conversaciones")
