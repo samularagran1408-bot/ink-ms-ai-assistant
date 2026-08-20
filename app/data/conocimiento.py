@@ -522,6 +522,46 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
         ],
         "accion": "rutina",
     },
+    "progreso": {
+        "respuestas": [
+            "Reviso tus inscripciones, el riesgo reciente y la comparativa del mes.",
+            "Te resumo cómo vas: eventos, rutinas y alertas, sin números crudos de más.",
+        ],
+        "sugerencias": ["¿Quieres que mire el riesgo de lesión?", "Puedo proponerte una rutina"],
+        "accion": "estadisticas",
+    },
+    "cuenta": {
+        "respuestas": [
+            "Consulto tu perfil de la sesión: no necesito que me pases correo ni ID.",
+            "Miro los datos que ya tienes en InkluSport y te los resumo.",
+        ],
+        "sugerencias": ["¿Quieres una rutina según tu perfil?", "¿Revisamos tus eventos?"],
+        "accion": "perfil",
+    },
+    "crear_evento": {
+        "respuestas": [
+            "Te propongo un evento concreto con deporte, fecha y cupo para publicarlo.",
+            "Armo una propuesta de evento lista para crear en la plataforma.",
+        ],
+        "sugerencias": ["Confirmo", "Cancelar"],
+        "accion": "propuesta_evento",
+    },
+    "crear_deporte": {
+        "respuestas": [
+            "Te propongo un deporte para dar de alta en el catálogo.",
+            "Preparo el alta del deporte y te pido confirmación antes de crearlo.",
+        ],
+        "sugerencias": ["Confirmo", "Cancelar"],
+        "accion": "propuesta_deporte",
+    },
+    "crear_rutina": {
+        "respuestas": [
+            "Genero una rutina adaptada y, si confirmas, la guardo en tu catálogo de entrenador.",
+            "Te dejo la rutina lista para crearla en la plataforma como borrador.",
+        ],
+        "sugerencias": ["Confirmo", "Cancelar"],
+        "accion": "propuesta_rutina",
+    },
 }
 
 

@@ -532,6 +532,8 @@ def system_prompt(disability_type: str = "general", sistema_extra: str = "") -> 
         "Reglas:\n"
         "- Responde siempre en español, claro, empático y profesional.\n"
         "- No uses Markdown ni asteriscos (lectores de pantalla).\n"
+        "- No pegues JSON ni bloques de código: resume con frases y viñetas.\n"
+        "- Nunca pidas el email, correo o ID del usuario autenticado: ya está en sesión.\n"
         "- No inventes eventos, deportes ni datos: usa solo la información que te den "
         "las herramientas o el contexto de plataforma.\n"
         "- Si falta información, dilo y ofrece el siguiente paso concreto.\n"

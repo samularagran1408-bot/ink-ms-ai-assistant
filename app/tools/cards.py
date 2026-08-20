@@ -32,6 +32,8 @@ def construir_cards(
         "tool_calling",
         "modelo_llm",
         "session_id",
+        "pendiente_write",
+        "cards",
     }
     for clave, payload in list(datos.items()):
         if clave in skip:
@@ -56,9 +58,34 @@ def construir_cards(
     return unicas[:12]
 
 
+def _lista_mcp(bloque: dict[str, Any]) -> list:
+    data = bloque.get("data")
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for clave in ("content", "items", "eventos", "events", "deportes", "sports"):
+            valor = data.get(clave)
+            if isinstance(valor, list):
+                return valor
+    return []
+
+
 def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     tool = origen if origen != "raiz" else None
+    items = _lista_mcp(bloque)
+    if items and isinstance(items[0], dict):
+        muestra = items[0]
+        if not bloque.get("eventos") and (
+            "evento" in (origen or "")
+            or any(k in muestra for k in ("eventDate", "sportName", "availableCapacity"))
+        ):
+            bloque = {**bloque, "eventos": items}
+        elif not bloque.get("deportes") and (
+            "deporte" in (origen or "")
+            or any(k in muestra for k in ("difficulty", "requiredMaterials"))
+        ):
+            bloque = {**bloque, "deportes": items}
 
     for ev in bloque.get("eventos") or []:
         if not isinstance(ev, dict):
@@ -180,5 +207,51 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
                 "cta": {"accion": "ver_quiz", "label": "Ir al quiz", "id": ""},
             }
         )
+
+    if bloque.get("pendiente_write") and isinstance(bloque.get("pendiente_write"), dict):
+        pend = bloque["pendiente_write"]
+        out.append(
+            {
+                "tipo": "confirmacion",
+                "tool": pend.get("tool"),
+                "titulo": "Confirmar acción",
+                "subtitulo": pend.get("resumen"),
+                "meta": ["Responde Confirmo o Cancelar"],
+                "cta": {
+                    "accion": "confirmar_write",
+                    "label": "Confirmar",
+                    "id": "",
+                },
+            }
+        )
+
+    usuario = bloque.get("usuario_card")
+    if isinstance(usuario, dict) and usuario:
+        out.append(
+            {
+                "tipo": "usuario",
+                "tool": tool or "consultar_mi_perfil",
+                "titulo": str(usuario.get("nombre") or "Tu perfil"),
+                "subtitulo": usuario.get("discapacidad"),
+                "meta": [", ".join(usuario.get("roles") or [])],
+                "cta": {"accion": "ver_perfil", "label": "Ver perfil", "id": ""},
+            }
+        )
+
+    vista = bloque.get("vista") or bloque.get("estadisticas")
+    if isinstance(vista, dict) and vista.get("kpis"):
+        for kpi in (vista.get("kpis") or [])[:4]:
+            if not isinstance(kpi, dict):
+                continue
+            out.append(
+                {
+                    "tipo": "kpi",
+                    "tool": tool or "estadisticas_usuario",
+                    "titulo": str(kpi.get("label") or kpi.get("clave") or "Dato"),
+                    "subtitulo": str(kpi.get("valor")),
+                    "meta": [str(kpi.get("icono") or "")],
+                    "cta": {"accion": "ver_estadisticas", "label": "Ver estadísticas", "id": ""},
+                }
+            )
 
     return out

@@ -171,21 +171,28 @@ class ConversacionService:
 
             titulo = (doc_prev or {}).get("titulo") or _titulo_desde_mensaje(mensaje_usuario)
 
+            set_doc: dict[str, Any] = {
+                "mensajes": todos,
+                "ultima_interaccion": ahora,
+                "estado": "activa",
+                "agente": resultado.get("agente"),
+                "titulo": titulo,
+                "resumen": resumen,
+                "total_mensajes": len(todos),
+            }
+            update: dict[str, Any] = {
+                "$set": set_doc,
+                "$setOnInsert": {"creada_en": ahora},
+                "$inc": {"turnos": 1},
+            }
+            if resultado.get("pendiente_write"):
+                set_doc["pendiente_write"] = resultado["pendiente_write"]
+            elif "pendiente_write" in resultado:
+                update["$unset"] = {"pendiente_write": ""}
+
             await db[COL_CONVERSACIONES].update_one(
                 {"usuario_id": usuario_id, "conversacion_id": conversacion_id},
-                {
-                    "$set": {
-                        "mensajes": todos,
-                        "ultima_interaccion": ahora,
-                        "estado": "activa",
-                        "agente": resultado.get("agente"),
-                        "titulo": titulo,
-                        "resumen": resumen,
-                        "total_mensajes": len(todos),
-                    },
-                    "$setOnInsert": {"creada_en": ahora},
-                    "$inc": {"turnos": 1},
-                },
+                update,
                 upsert=True,
             )
             await self._aplicar_cupo_conversaciones(usuario_id)
@@ -327,6 +334,13 @@ class ConversacionService:
         except Exception as exc:
             print(f"Error archivando conversación: {exc}")
             return False
+
+    async def leer_pendiente_write(
+        self, usuario_id: str, conversacion_id: str
+    ) -> Optional[dict[str, Any]]:
+        doc = await self._buscar_doc(usuario_id, conversacion_id, exigir_id=True)
+        pendiente = (doc or {}).get("pendiente_write")
+        return pendiente if isinstance(pendiente, dict) else None
 
     # ------------------------------------------------------------------- helpers
 

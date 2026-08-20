@@ -12,7 +12,10 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import date, timedelta
 from typing import Any, AsyncIterator, Optional
+
+from app.agents.dashboard_agent import DashboardAgent
 
 from app.config import settings
 from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
@@ -23,12 +26,21 @@ from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
 from app.services.conversacion_service import ConversacionService
 from app.services.llm_service import LLMService, _limpiar, system_prompt
+from app.services.mcp_client import llamar_tool, listar_tools_openai
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
 from app.tools.registry import (
     TOOL_DEFINITIONS,
     accion_de_tool,
     mensaje_tool_para_objetivo,
+)
+from app.tools.roles import TOOLS_LOCALES, filtrar_definiciones, nombres_permitidos
+from app.tools.writes import (
+    es_cancelacion,
+    es_confirmacion,
+    es_write,
+    mensaje_pedir_confirmacion,
+    resumen_write,
 )
 
 _ROTACION: dict[tuple[str, str], int] = {}
@@ -38,16 +50,25 @@ _SOCIAL = frozenset({"saludo", "despedida", "agradecimiento"})
 # Intenciones que disparan herramientas con datos reales
 _CON_HERRAMIENTA = frozenset({
     "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
-    "discapacidades", "adaptaciones", "quiz",
+    "discapacidades", "adaptaciones", "quiz", "progreso", "cuenta",
+    "crear_evento", "crear_deporte", "crear_rutina",
 })
 
 _SISTEMA_TOOLS = (
-    "Puedes usar herramientas para obtener datos reales de InkluSport "
-    "(eventos, deportes, adaptaciones, rutinas, ejercicios, quiz). "
-    "Si la pregunta necesita datos de plataforma, llama a la herramienta "
-    "adecuada antes de responder. No inventes nombres, fechas ni cupos. "
+    "Puedes usar herramientas para obtener o cambiar datos reales de InkluSport "
+    "(eventos, deportes, adaptaciones, inscripciones, discapacidades, usuarios). "
+    "El usuario YA está autenticado: NUNCA pidas su email, correo ni ID. "
+    "Para su perfil llama consultar_mi_perfil o consultar_usuario con 'me'. "
+    "Para inscripciones no hace falta user_id. "
+    "Si un admin pregunta por otra persona, busca por nombre con buscar_usuarios "
+    "y luego estadisticas_usuario; no pidas identificadores. "
+    "Organizador: si pide ideas o crear un evento, usa recomendar_evento_nuevo "
+    "y ofrece crearlo con crear_evento. "
+    "Entrenador: si pide un deporte o rutina nueva, usa recomendar_deporte_nuevo "
+    "o recomendar_rutina_nueva y ofrece crearlo en la plataforma. "
+    "Las escrituras requieren que el usuario confirme; tú solo pide la tool. "
     "Cuando ya tengas los datos, responde en español, máximo 6 frases, "
-    "sin Markdown."
+    "sin Markdown y SIN pegar JSON."
 )
 
 
@@ -57,6 +78,7 @@ class ChatbotAgent:
         self.sports_service = SportsService()
         self.user_service = UserService()
         self.conversaciones = ConversacionService()
+        self.dashboard = DashboardAgent()
 
     # ------------------------------------------------------------------ público
 
@@ -70,6 +92,9 @@ class ChatbotAgent:
         clasificacion: dict[str, Any],
         *,
         eventos: Optional[list[dict[str, Any]]] = None,
+        roles: Optional[list[str]] = None,
+        conversacion_id: Optional[str] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Decide tool-calling / motor local / LLM conversacional."""
         intencion = clasificacion["nombre"]
@@ -77,7 +102,8 @@ class ChatbotAgent:
         # 1) Social → plantillas locales (rápido, sin tokens)
         if intencion in _SOCIAL:
             return await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje,
+                roles=roles or [], perfil=perfil,
             )
 
         # 2) Tool-calling LLM (estilo MCP) cuando está habilitado
@@ -90,6 +116,8 @@ class ChatbotAgent:
                 usuario_id,
                 intencion_hint=intencion or clasificacion.get("mejor_candidato"),
                 eventos=eventos,
+                roles=roles or [],
+                perfil=perfil,
             )
             if con_tools:
                 return con_tools
@@ -101,7 +129,8 @@ class ChatbotAgent:
                     {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
                 )
             resultado = await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje,
+                roles=roles or [], perfil=perfil,
             )
             if eventos is not None:
                 eventos.append(
@@ -115,7 +144,8 @@ class ChatbotAgent:
         borrador = None
         if intencion:
             local = await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje,
+                roles=roles or [], perfil=perfil,
             )
             borrador = local.get("respuesta")
             sugerencias = local.get("sugerencias") or []
@@ -132,6 +162,8 @@ class ChatbotAgent:
             historial_llm,
             borrador=borrador,
             intencion_hint=intencion or clasificacion.get("mejor_candidato"),
+            perfil=perfil,
+            roles=roles or [],
         )
         if conversacional:
             conversacional["sugerencias"] = conversacional.get("sugerencias") or sugerencias
@@ -140,7 +172,8 @@ class ChatbotAgent:
         # 5) Sin LLM: plantilla / aproximación / no_entendido
         if intencion:
             return await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje,
+                roles=roles or [], perfil=perfil,
             )
         return await self._responder_desconocido(
             usuario_id,
@@ -158,6 +191,8 @@ class ChatbotAgent:
         discapacidad: Optional[str] = None,
         authorization: Optional[str] = None,
         conversacion_id: Optional[str] = None,
+        roles: Optional[list[str]] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         historial, cid_efectiva, resumen = await self.conversaciones.cargar_contexto_llm(
             usuario_id, conversacion_id or ""
@@ -166,22 +201,38 @@ class ChatbotAgent:
         conversacion_id = conversacion_id or cid_efectiva or str(uuid.uuid4())
         clave_discapacidad = canonizar(discapacidad)
         historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
+        roles = roles or []
 
-        clasificacion = clasificar(mensaje)
-        intencion = clasificacion["nombre"]
-
-        resultado = await self._resolver_turno(
-            usuario_id,
-            mensaje,
-            clave_discapacidad,
-            authorization,
-            historial_llm,
-            clasificacion,
+        pendiente = await self.conversaciones.leer_pendiente_write(
+            usuario_id, conversacion_id
         )
+        if pendiente:
+            resultado = await self._resolver_pendiente(
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                authorization,
+                roles,
+                pendiente,
+            )
+        else:
+            clasificacion = clasificar(mensaje)
+            intencion = clasificacion["nombre"]
+            resultado = await self._resolver_turno(
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                authorization,
+                historial_llm,
+                clasificacion,
+                roles=roles,
+                conversacion_id=conversacion_id,
+                perfil=perfil,
+            )
+            resultado["intencion"] = resultado.get("intencion") or intencion or "general"
+            resultado["confianza"] = clasificacion["confianza"]
+            resultado["terminos_detectados"] = clasificacion["terminos"]
 
-        resultado["intencion"] = resultado.get("intencion") or intencion or "general"
-        resultado["confianza"] = clasificacion["confianza"]
-        resultado["terminos_detectados"] = clasificacion["terminos"]
         resultado["conversacion_id"] = conversacion_id
         resultado["agente"] = "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
@@ -199,6 +250,8 @@ class ChatbotAgent:
         discapacidad: Optional[str] = None,
         authorization: Optional[str] = None,
         conversacion_id: Optional[str] = None,
+        roles: Optional[list[str]] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Emite fases del agente (SSE) y cierra con la respuesta final."""
         yield {"evento": "estado", "detalle": "analizando_intencion"}
@@ -208,35 +261,54 @@ class ChatbotAgent:
         conversacion_id = conversacion_id or cid_efectiva or str(uuid.uuid4())
         clave_discapacidad = canonizar(discapacidad)
         historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
+        roles = roles or []
 
-        clasificacion = clasificar(mensaje)
-        intencion = clasificacion["nombre"]
-
-        if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
-            yield {"evento": "estado", "detalle": "agente_con_tools"}
-        elif intencion in _CON_HERRAMIENTA:
-            yield {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
-        elif self.llm.disponible and intencion not in _SOCIAL:
-            yield {"evento": "estado", "detalle": "redactando_respuesta"}
-        else:
-            yield {"evento": "estado", "detalle": "consultando_conocimiento"}
-
-        eventos_side: list[dict[str, Any]] = []
-        resultado = await self._resolver_turno(
-            usuario_id,
-            mensaje,
-            clave_discapacidad,
-            authorization,
-            historial_llm,
-            clasificacion,
-            eventos=eventos_side,
+        pendiente = await self.conversaciones.leer_pendiente_write(
+            usuario_id, conversacion_id
         )
+        eventos_side: list[dict[str, Any]] = []
+        if pendiente:
+            yield {"evento": "estado", "detalle": "confirmando_accion"}
+            resultado = await self._resolver_pendiente(
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                authorization,
+                roles,
+                pendiente,
+            )
+        else:
+            clasificacion = clasificar(mensaje)
+            intencion = clasificacion["nombre"]
+
+            if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
+                yield {"evento": "estado", "detalle": "agente_con_tools"}
+            elif intencion in _CON_HERRAMIENTA:
+                yield {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
+            elif self.llm.disponible and intencion not in _SOCIAL:
+                yield {"evento": "estado", "detalle": "redactando_respuesta"}
+            else:
+                yield {"evento": "estado", "detalle": "consultando_conocimiento"}
+
+            resultado = await self._resolver_turno(
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                authorization,
+                historial_llm,
+                clasificacion,
+                eventos=eventos_side,
+                roles=roles,
+                conversacion_id=conversacion_id,
+                perfil=perfil,
+            )
+            resultado["intencion"] = resultado.get("intencion") or intencion or "general"
+            resultado["confianza"] = clasificacion["confianza"]
+            resultado["terminos_detectados"] = clasificacion["terminos"]
+
         for ev in eventos_side:
             yield ev
 
-        resultado["intencion"] = resultado.get("intencion") or intencion or "general"
-        resultado["confianza"] = clasificacion["confianza"]
-        resultado["terminos_detectados"] = clasificacion["terminos"]
         resultado["conversacion_id"] = conversacion_id
         resultado["agente"] = "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
@@ -260,6 +332,8 @@ class ChatbotAgent:
         *,
         intencion_hint: Optional[str] = None,
         eventos: Optional[list[dict[str, Any]]] = None,
+        roles: Optional[list[str]] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         """Loop LLM ↔ tools. Devuelve None para caer al motor local."""
         if not self.llm.disponible:
@@ -270,14 +344,17 @@ class ChatbotAgent:
             if intencion_hint
             else ""
         )
+        sesion = self._texto_sesion(usuario_id, discapacidad, roles or [], perfil)
         mensajes: list[dict[str, Any]] = [
-            {"role": "system", "content": system_prompt(discapacidad, _SISTEMA_TOOLS)},
+            {"role": "system", "content": system_prompt(discapacidad, _SISTEMA_TOOLS + "\n" + sesion)},
             *historial,
             {
                 "role": "user",
                 "content": (
                     f"Mensaje del usuario: «{mensaje}».{hint} "
-                    "Usa herramientas si necesitas datos reales de la plataforma."
+                    f"{sesion} "
+                    "Usa herramientas si necesitas datos reales de la plataforma. "
+                    "No pidas email ni ID."
                 ),
             },
         ]
@@ -285,13 +362,17 @@ class ChatbotAgent:
         herramientas_usadas: list[str] = []
         datos_acumulados: dict[str, Any] = {"modo": "tool_calling", "rondas": []}
         max_rondas = max(1, settings.LLM_TOOL_MAX_RONDAS)
+        roles = roles or []
+        tools_openai = await self._definiciones_tools(roles, authorization)
+        if not tools_openai:
+            return None
 
         try:
             for ronda in range(max_rondas):
                 resultado_llm = await self.llm.completar(
                     mensajes,
                     temperatura=0.4,
-                    tools=TOOL_DEFINITIONS,
+                    tools=tools_openai,
                     tool_choice="auto",
                 )
 
@@ -316,6 +397,27 @@ class ChatbotAgent:
                             args = {}
                         if not isinstance(args, dict):
                             args = {}
+                        args = self._fijar_actor(nombre, args, usuario_id, roles)
+
+                        if es_write(nombre):
+                            pendiente = {
+                                "tool": nombre,
+                                "args": args,
+                                "resumen": resumen_write(nombre, args),
+                            }
+                            return {
+                                "respuesta": mensaje_pedir_confirmacion(nombre, args),
+                                "intencion": intencion_hint or "general",
+                                "adaptada": discapacidad != "general",
+                                "sugerencias": ["Confirmo", "Cancelar"],
+                                "datos": {"pendiente_write": pendiente},
+                                "fuente": "agente",
+                                "herramientas_usadas": [nombre],
+                                "sintesis_llm": False,
+                                "tool_calling": True,
+                                "modelo_llm": resultado_llm.modelo_usado,
+                                "pendiente_write": pendiente,
+                            }
 
                         if eventos is not None:
                             eventos.append(
@@ -327,13 +429,15 @@ class ChatbotAgent:
                                 }
                             )
 
-                        texto, datos = await self._ejecutar_tool(
+                        texto, datos = await self._ejecutar_herramienta(
                             nombre,
                             args,
                             usuario_id,
                             discapacidad,
                             authorization,
                             mensaje,
+                            roles,
+                            perfil=perfil,
                         )
                         herramientas_usadas.append(nombre)
                         datos_acumulados["rondas"].append(
@@ -424,14 +528,184 @@ class ChatbotAgent:
         discapacidad: str,
         authorization: Optional[str],
         mensaje_usuario: str,
+        roles: Optional[list[str]] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
         accion = accion_de_tool(nombre)
         if not accion:
             return f"Herramienta desconocida: {nombre}", {"error": "tool_desconocida"}
         mensaje = mensaje_tool_para_objetivo(nombre, args, mensaje_usuario)
+        if nombre == "estadisticas_usuario" and (args or {}).get("nombre_o_id"):
+            mensaje = str(args.get("nombre_o_id"))
         return await self._enriquecer(
-            accion, usuario_id, discapacidad, authorization, mensaje
+            accion, usuario_id, discapacidad, authorization, mensaje,
+            roles=roles or [], perfil=perfil, args=args,
         )
+
+    def _texto_sesion(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        roles: list[str],
+        perfil: Optional[dict[str, Any]],
+    ) -> str:
+        nombre = (perfil or {}).get("fullName") or "Usuario"
+        disc = (perfil or {}).get("disability") or discapacidad or "no indicada"
+        roles_txt = ", ".join(str(r) for r in (roles or [])) or "USUARIO"
+        return (
+            f"Sesión: {nombre}. Discapacidad de perfil: {disc}. Roles: {roles_txt}. "
+            "Identidad ya resuelta; no preguntes email ni ID."
+        )
+
+    def _claves_rol(self, roles: list[str]) -> set[str]:
+        claves: set[str] = set()
+        for rol in roles or []:
+            r = str(rol).upper().replace("ROLE_", "")
+            if r in ("ADMIN", "ADMINISTRADOR"):
+                claves.add("admin")
+            elif r in ("ORGANIZER", "ORGANIZADOR"):
+                claves.add("organizador")
+            elif r in ("TRAINER", "ENTRENADOR", "COACH"):
+                claves.add("entrenador")
+            elif r in ("USER", "USUARIO"):
+                claves.add("usuario")
+        return claves or {"usuario"}
+
+    def _fijar_actor(
+        self,
+        nombre: str,
+        args: dict[str, Any],
+        usuario_id: str,
+        roles: list[str],
+    ) -> dict[str, Any]:
+        args = dict(args or {})
+        claves = self._claves_rol(roles)
+        es_admin = "admin" in claves
+        es_staff = bool(claves & {"admin", "entrenador", "organizador"})
+        if nombre == "inscribirse_evento" and (not es_staff or not args.get("user_id")):
+            args["user_id"] = usuario_id
+        if nombre == "consultar_inscripciones":
+            clave = str(args.get("user_id") or "").strip()
+            if not clave or clave.lower() in ("me", "yo") or not es_admin:
+                args["user_id"] = usuario_id
+        if nombre == "consultar_usuario":
+            clave = str(args.get("user_id_o_email") or "").strip()
+            if not clave or clave.lower() in ("me", "yo") or not es_admin:
+                args["user_id_o_email"] = "me"
+        if nombre == "listar_rutinas_entrenador":
+            clave = str(args.get("trainer_id") or "").strip()
+            if not clave or clave.lower() in ("me", "yo"):
+                args["trainer_id"] = usuario_id
+        if nombre == "crear_evento" and not args.get("created_by"):
+            args["created_by"] = usuario_id
+        if nombre == "crear_rutina" and not args.get("trainer_id"):
+            args["trainer_id"] = usuario_id
+        if nombre == "estadisticas_usuario" and not es_admin:
+            args.pop("nombre_o_id", None)
+        return args
+
+    async def _definiciones_tools(
+        self, roles: list[str], authorization: Optional[str]
+    ) -> list[dict[str, Any]]:
+        mcp_tools = await listar_tools_openai(authorization)
+        locales = [
+            t
+            for t in TOOL_DEFINITIONS
+            if (t.get("function") or {}).get("name") in TOOLS_LOCALES
+        ]
+        combinadas = (mcp_tools + locales) if mcp_tools else list(TOOL_DEFINITIONS)
+        return filtrar_definiciones(combinadas, roles)
+
+    async def _ejecutar_herramienta(
+        self,
+        nombre: str,
+        args: dict[str, Any],
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje_usuario: str,
+        roles: list[str],
+        perfil: Optional[dict[str, Any]] = None,
+    ) -> tuple[str, dict[str, Any]]:
+        if nombre not in nombres_permitidos(roles):
+            return (
+                f"No tienes permiso para la herramienta {nombre}.",
+                {"success": False, "error": "tool_no_permitida"},
+            )
+        if (nombre or "") in TOOLS_LOCALES or accion_de_tool(nombre):
+            if nombre in TOOLS_LOCALES or not settings.MCP_ENABLED:
+                return await self._ejecutar_tool(
+                    nombre, args, usuario_id, discapacidad, authorization, mensaje_usuario,
+                    roles=roles, perfil=perfil,
+                )
+        mcp_datos = await llamar_tool(nombre, args, authorization)
+        if isinstance(mcp_datos, dict) and mcp_datos.get("success") is False:
+            if accion_de_tool(nombre):
+                return await self._ejecutar_tool(
+                    nombre, args, usuario_id, discapacidad, authorization, mensaje_usuario,
+                    roles=roles, perfil=perfil,
+                )
+        texto = json.dumps(mcp_datos, ensure_ascii=False, default=str)[:6000]
+        return texto, mcp_datos if isinstance(mcp_datos, dict) else {"data": mcp_datos}
+
+    async def _resolver_pendiente(
+        self,
+        usuario_id: str,
+        mensaje: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        roles: list[str],
+        pendiente: dict[str, Any],
+    ) -> dict[str, Any]:
+        if es_cancelacion(mensaje):
+            return {
+                "respuesta": "Cancelado. No he ejecutado esa acción.",
+                "intencion": "general",
+                "adaptada": discapacidad != "general",
+                "sugerencias": [],
+                "datos": {},
+                "fuente": "agente",
+                "herramientas_usadas": [],
+                "pendiente_write": None,
+            }
+        if not es_confirmacion(mensaje):
+            return {
+                "respuesta": (
+                    f"Sigue pendiente: {pendiente.get('resumen')}. "
+                    "Responde «Confirmo» o «Cancelar»."
+                ),
+                "intencion": "general",
+                "adaptada": discapacidad != "general",
+                "sugerencias": ["Confirmo", "Cancelar"],
+                "datos": {"pendiente_write": pendiente},
+                "fuente": "agente",
+                "herramientas_usadas": [pendiente.get("tool") or ""],
+                "pendiente_write": pendiente,
+            }
+
+        nombre = str(pendiente.get("tool") or "")
+        args = self._fijar_actor(nombre, pendiente.get("args") or {}, usuario_id, roles)
+        texto, datos = await self._ejecutar_herramienta(
+            nombre, args, usuario_id, discapacidad, authorization, mensaje, roles
+        )
+        ok = isinstance(datos, dict) and datos.get("success") is not False
+        respuesta = (
+            "Listo. La acción se ejecutó en la plataforma."
+            if ok
+            else "No pude completar la acción. "
+            + str((datos or {}).get("error") or texto)[:400]
+        )
+        return {
+            "respuesta": _limpiar(respuesta),
+            "intencion": "general",
+            "adaptada": discapacidad != "general",
+            "sugerencias": [],
+            "datos": {nombre: datos} if datos else {},
+            "fuente": "agente",
+            "herramientas_usadas": [nombre],
+            "tool_calling": True,
+            "pendiente_write": None,
+        }
 
     async def _sintesis_tras_tools(
         self,
@@ -450,7 +724,8 @@ class ChatbotAgent:
                         f"Mensaje: «{mensaje}»\n"
                         f"Datos de herramientas: "
                         f"{json.dumps(datos, ensure_ascii=False, default=str)[:3500]}\n"
-                        "Responde en español, máximo 6 frases, sin inventar datos."
+                        "Responde en español, máximo 6 frases, sin Markdown y sin pegar JSON. "
+                        "No pidas email ni ID. No inventes datos."
                     ),
                 },
             ],
@@ -466,6 +741,9 @@ class ChatbotAgent:
         discapacidad: str,
         authorization: Optional[str],
         mensaje: str = "",
+        *,
+        roles: Optional[list[str]] = None,
+        perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         conocimiento = await obtener_conocimiento(intencion) or {}
         adaptaciones = conocimiento.get("adaptaciones") or {}
@@ -475,18 +753,27 @@ class ChatbotAgent:
             texto = especifica
         else:
             variantes = conocimiento.get("respuestas") or []
-            texto = self._rotar(usuario_id, intencion, variantes)
+            texto = self._rotar(usuario_id, intencion, variantes) if variantes else ""
 
         datos: dict[str, Any] = {}
-        accion = conocimiento.get("accion")
+        accion = conocimiento.get("accion") or {
+            "progreso": "estadisticas",
+            "cuenta": "perfil",
+            "crear_evento": "propuesta_evento",
+            "crear_deporte": "propuesta_deporte",
+            "crear_rutina": "propuesta_rutina",
+        }.get(intencion)
         if accion:
             complemento, datos = await self._enriquecer(
-                accion, usuario_id, discapacidad, authorization, mensaje
+                accion, usuario_id, discapacidad, authorization, mensaje,
+                roles=roles or [], perfil=perfil,
             )
             if complemento:
-                texto = f"{texto}\n\n{complemento}"
+                texto = f"{texto}\n\n{complemento}".strip()
+        if not texto:
+            texto = self._rotar(usuario_id, intencion, [])
 
-        return {
+        resultado = {
             "respuesta": texto,
             "intencion": intencion,
             "adaptada": bool(especifica),
@@ -495,6 +782,10 @@ class ChatbotAgent:
             "fuente": "motor_local",
             "herramientas_usadas": [accion] if accion else [],
         }
+        if datos and datos.get("pendiente_write"):
+            resultado["pendiente_write"] = datos["pendiente_write"]
+            resultado["sugerencias"] = ["Confirmo", "Cancelar"]
+        return resultado
 
     async def _responder_conversacional(
         self,
@@ -505,12 +796,15 @@ class ChatbotAgent:
         *,
         borrador: Optional[str] = None,
         intencion_hint: Optional[str] = None,
+        perfil: Optional[dict[str, Any]] = None,
+        roles: Optional[list[str]] = None,
     ) -> Optional[dict[str, Any]]:
         """Chat normal con LLM: responde casi cualquier pregunta con contexto real."""
         if not self.llm.disponible:
             return None
 
-        contexto = await self._contexto_plataforma(authorization)
+        contexto = await self._contexto_plataforma(authorization, perfil=perfil)
+        sesion = self._texto_sesion("sesion", discapacidad, roles or [], perfil)
         pista = ""
         if borrador:
             pista = (
@@ -535,11 +829,11 @@ class ChatbotAgent:
                 "role": "user",
                 "content": (
                     f"Mensaje del usuario: «{mensaje}»{hint}\n\n"
-                    f"Datos reales de InkluSport ahora mismo:\n{contexto}"
+                    f"Datos reales de InkluSport ahora mismo:\n{sesion}\n{contexto}"
                     f"{pista}\n\n"
-                    "Responde en español, máximo 6 frases, sin Markdown. "
-                    "No digas que no entiendes si puedes dar una respuesta razonable. "
-                    "No inventes eventos, deportes ni cupos: solo los del contexto. "
+                    "Responde en español, máximo 6 frases, sin Markdown y sin JSON. "
+                    "No pidas email ni ID. No inventes eventos, deportes ni cupos: "
+                    "solo los del contexto. "
                     "Si falta un dato, dilo y ofrece el siguiente paso "
                     "(rutina, eventos, adaptaciones o quiz)."
                 ),
@@ -616,6 +910,10 @@ class ChatbotAgent:
         """Pule respuestas con herramientas para que suenen a chatbot, no a plantilla."""
         if resultado.get("fuente") == "agente":
             return resultado
+        if resultado.get("pendiente_write"):
+            resultado = dict(resultado)
+            resultado["sintesis_llm"] = False
+            return resultado
         if not self.llm.disponible:
             resultado = dict(resultado)
             resultado.setdefault("sintesis_llm", False)
@@ -668,7 +966,11 @@ class ChatbotAgent:
         resultado["sintesis_llm"] = True
         return resultado
 
-    async def _contexto_plataforma(self, authorization: Optional[str]) -> str:
+    async def _contexto_plataforma(
+        self,
+        authorization: Optional[str],
+        perfil: Optional[dict[str, Any]] = None,
+    ) -> str:
         try:
             deportes = await self.sports_service.get_deportes_activos(authorization)
             eventos = await self.sports_service.get_eventos_activos(authorization)
@@ -678,6 +980,11 @@ class ChatbotAgent:
             return "- Catálogo no disponible en este momento."
 
         lineas = []
+        if perfil:
+            lineas.append(
+                f"- Atleta en sesión: {perfil.get('fullName') or 'Usuario'} "
+                f"(discapacidad: {perfil.get('disability') or 'no indicada'})"
+            )
         if deportes:
             nombres = ", ".join(str(d.get("name")) for d in deportes[:10])
             lineas.append(f"- Deportes activos: {nombres}")
@@ -710,6 +1017,10 @@ class ChatbotAgent:
         discapacidad: str,
         authorization: Optional[str],
         mensaje: str = "",
+        *,
+        roles: Optional[list[str]] = None,
+        perfil: Optional[dict[str, Any]] = None,
+        args: Optional[dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
         acciones = {
             "eventos": self._datos_eventos,
@@ -719,11 +1030,35 @@ class ChatbotAgent:
             "rutina": self._datos_rutina,
             "ejercicios": self._datos_ejercicios,
             "quiz": self._datos_quiz,
+            "perfil": self._datos_perfil,
+            "estadisticas": self._datos_estadisticas,
+            "propuesta_evento": self._datos_propuesta_evento,
+            "propuesta_deporte": self._datos_propuesta_deporte,
+            "propuesta_rutina": self._datos_propuesta_rutina,
         }
         manejador = acciones.get(accion)
         if not manejador:
             return "", {}
+        extra = {
+            "roles": roles or [],
+            "perfil": perfil,
+            "args": args or {},
+        }
         try:
+            if accion in (
+                "rutina",
+                "ejercicios",
+                "perfil",
+                "estadisticas",
+                "propuesta_evento",
+                "propuesta_deporte",
+                "propuesta_rutina",
+            ):
+                return await manejador(
+                    usuario_id, discapacidad, authorization, mensaje, **extra
+                )
+            return await manejador(usuario_id, discapacidad, authorization)
+        except TypeError:
             if accion in ("rutina", "ejercicios"):
                 return await manejador(usuario_id, discapacidad, authorization, mensaje)
             return await manejador(usuario_id, discapacidad, authorization)
@@ -873,6 +1208,7 @@ class ChatbotAgent:
         discapacidad: str,
         authorization: Optional[str],
         mensaje: str = "",
+        **_kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
         catalogo = await obtener_catalogo_ejercicios()
         rutina = generar_rutina(
@@ -916,6 +1252,7 @@ class ChatbotAgent:
         discapacidad: str,
         authorization: Optional[str],
         mensaje: str = "",
+        **_kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
         catalogo = await obtener_catalogo_ejercicios()
         rutina = generar_rutina(
@@ -948,3 +1285,216 @@ class ChatbotAgent:
             "umbral_organizador": 70,
             "umbral_entrenador": 75,
         }
+
+    async def _datos_perfil(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        perfil = kwargs.get("perfil") or await self.user_service.get_my_profile(authorization)
+        if not perfil:
+            perfil = await self.user_service.get_user_profile(usuario_id, authorization)
+        if not perfil:
+            return "No pude leer tu perfil de la sesión. Recarga e inicia sesión de nuevo.", {}
+        nombre = perfil.get("fullName") or "Usuario"
+        disc = perfil.get("disability") or discapacidad or "no indicada"
+        roles = perfil.get("roles") or kwargs.get("roles") or []
+        if isinstance(roles, str):
+            roles = [r.strip() for r in roles.split(",") if r.strip()]
+        lineas = [
+            f"Tu perfil en InkluSport, {nombre}:",
+            f"- Discapacidad registrada: {disc}",
+            f"- Roles: {', '.join(str(r) for r in roles) or 'USUARIO'}",
+        ]
+        if perfil.get("bio"):
+            lineas.append(f"- Bio: {perfil.get('bio')}")
+        if perfil.get("supportPreference"):
+            lineas.append(f"- Preferencia de apoyo: {perfil.get('supportPreference')}")
+        lineas.append("Si quieres cambiar algo, ábrelo desde tu ficha de perfil en la app.")
+        return "\n".join(lineas), {
+            "usuario_card": {
+                "nombre": nombre,
+                "discapacidad": disc,
+                "roles": [str(r) for r in roles],
+            }
+        }
+
+    async def _datos_estadisticas(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        objetivo_id = usuario_id
+        perfil = kwargs.get("perfil")
+        roles = kwargs.get("roles") or []
+        nombre_buscado = (mensaje or "").strip()
+        args = kwargs.get("args") or {}
+        if args.get("nombre_o_id"):
+            nombre_buscado = str(args.get("nombre_o_id")).strip()
+        if nombre_buscado and "admin" in self._claves_rol(roles):
+            hallados = await self.user_service.search_users(
+                nombre=nombre_buscado, authorization=authorization
+            )
+            if hallados:
+                perfil = hallados[0]
+                objetivo_id = str(perfil.get("id") or objetivo_id)
+            elif len(nombre_buscado) > 8 and " " not in nombre_buscado:
+                ajeno = await self.user_service.get_user_profile(nombre_buscado, authorization)
+                if ajeno:
+                    perfil = ajeno
+                    objetivo_id = str(ajeno.get("id") or objetivo_id)
+        dash = await self.dashboard.construir(
+            usuario_id=objetivo_id,
+            authorization=authorization,
+            perfil=perfil,
+        )
+        texto = self.dashboard.resumen_texto(dash)
+        return texto, {"vista": dash.get("vista"), "estadisticas": dash.get("vista")}
+
+    def _proximo_sabado(self) -> str:
+        hoy = date.today()
+        dias = (5 - hoy.weekday()) % 7
+        if dias == 0:
+            dias = 7
+        return (hoy + timedelta(days=dias)).isoformat()
+
+    async def _datos_propuesta_evento(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        deportes = await self.sports_service.get_deportes_activos(authorization)
+        if not deportes:
+            return (
+                "No hay deportes en el catálogo para armar un evento. "
+                "Un entrenador puede dar de alta uno primero.",
+                {},
+            )
+        idea = (mensaje or "").lower()
+        elegido = next(
+            (d for d in deportes if idea and str(d.get("name") or "").lower() in idea),
+            deportes[0],
+        )
+        fecha = self._proximo_sabado()
+        nombre = f"Jornada inclusiva de {elegido.get('name')}"
+        args = {
+            "sport_id": int(elegido.get("id") or 0),
+            "name": nombre,
+            "event_date": fecha,
+            "event_time": "10:00:00",
+            "max_capacity": 24,
+            "location": "Por confirmar",
+            "description": (
+                f"Evento propuesto por el asistente para {elegido.get('name')}. "
+                f"Idea original: {mensaje or 'apertura de calendario'}."
+            ),
+            "created_by": usuario_id,
+        }
+        pendiente = {
+            "tool": "crear_evento",
+            "args": args,
+            "resumen": resumen_write("crear_evento", args),
+        }
+        texto = (
+            f"Te propongo crear «{nombre}» el {fecha} a las 10:00, "
+            f"cupo 24, deporte {elegido.get('name')}. "
+            "Si te encaja, responde Confirmo y lo creo en la plataforma."
+        )
+        return texto, {
+            "pendiente_write": pendiente,
+            "eventos": [
+                {
+                    "nombre": nombre,
+                    "deporte": elegido.get("name"),
+                    "fecha": fecha,
+                    "ubicacion": "Por confirmar",
+                    "cupos_disponibles": 24,
+                }
+            ],
+        }
+
+    async def _datos_propuesta_deporte(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        idea = (mensaje or "Deporte inclusivo").strip() or "Deporte inclusivo"
+        if len(idea) < 3:
+            idea = "Deporte inclusivo"
+        nombre = idea[:80]
+        args = {
+            "name": nombre,
+            "description": f"Alta sugerida por el asistente. Contexto: {mensaje or nombre}",
+            "difficulty": "intermedio",
+            "required_materials": "Material adaptado según el perfil del grupo",
+            "is_active": True,
+        }
+        pendiente = {
+            "tool": "crear_deporte",
+            "args": args,
+            "resumen": resumen_write("crear_deporte", args),
+        }
+        texto = (
+            f"Puedo dar de alta el deporte «{nombre}» (dificultad intermedia) "
+            "en el catálogo. Responde Confirmo para crearlo."
+        )
+        return texto, {
+            "pendiente_write": pendiente,
+            "deportes": [{"nombre": nombre, "dificultad": "intermedio"}],
+        }
+
+    async def _datos_propuesta_rutina(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        perfil = kwargs.get("perfil") or {}
+        texto_rutina, datos_rutina = await self._datos_rutina(
+            usuario_id, discapacidad, authorization, mensaje
+        )
+        sugerida = (datos_rutina or {}).get("rutina_sugerida") or {}
+        ejercicios = sugerida.get("bloques") or []
+        payload_ej = []
+        for bloque in ejercicios:
+            for nom in bloque.get("ejercicios") or []:
+                payload_ej.append({"nombre": nom, "bloque": bloque.get("bloque")})
+        deportes = await self.sports_service.get_deportes_activos(authorization)
+        sport_id = int(deportes[0]["id"]) if deportes and deportes[0].get("id") else None
+        args = {
+            "name": sugerida.get("nombre") or "Rutina adaptada",
+            "description": texto_rutina[:400],
+            "disability_focus": perfil.get("disability") or discapacidad,
+            "level": sugerida.get("nivel") or "beginner",
+            "duration_minutes": sugerida.get("duracion_estimada_minutos") or 30,
+            "exercises_json": json.dumps(payload_ej, ensure_ascii=False),
+            "max_capacity": 20,
+            "trainer_id": usuario_id,
+        }
+        if sport_id:
+            args["sport_id"] = sport_id
+        pendiente = {
+            "tool": "crear_rutina",
+            "args": args,
+            "resumen": resumen_write("crear_rutina", args),
+        }
+        texto = (
+            f"{texto_rutina}\n\n"
+            "Si quieres, la guardo como rutina de entrenador en la plataforma. "
+            "Responde Confirmo para crearla (quedará en borrador hasta que la publiques)."
+        )
+        return texto, {**datos_rutina, "pendiente_write": pendiente}

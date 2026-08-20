@@ -54,6 +54,10 @@ class Settings:
     )
     REPORTS_SERVICE_URL = os.getenv("REPORTS_SERVICE_URL", "http://localhost:3006")
 
+    # Servidor MCP (ink-mcp-inklusport). El chat actúa como cliente.
+    MCP_ENABLED = _bool("MCP_ENABLED", True)
+    MCP_URL = os.getenv("MCP_URL", "http://127.0.0.1:8000/mcp")
+
     # LLM opcional. El servicio funciona completo sin él (motor local);
     # cuando está disponible se usa para enriquecer las respuestas.
     LLM_ENABLED = _bool("LLM_ENABLED", True)

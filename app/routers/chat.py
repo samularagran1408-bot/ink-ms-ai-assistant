@@ -83,6 +83,7 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
         herramientas_usadas=herramientas,
         modelo=resultado.get("modelo_llm"),
         fuente=resultado.get("fuente", "motor_local"),
+        roles=ctx.roles,
     )
     return ChatResponse(
         conversacion_id=cid,
@@ -147,6 +148,8 @@ async def chat(
             discapacidad,
             ctx.authorization,
             request.hilo_id,
+            ctx.roles,
+            ctx.perfil,
         )
         return _chat_response(ctx, resultado, request.hilo_id)
     except HTTPException:
@@ -178,6 +181,8 @@ async def chat_stream(
                 discapacidad,
                 ctx.authorization,
                 request.hilo_id,
+                ctx.roles,
+                ctx.perfil,
             ):
                 yield f"data: {json.dumps(evento, ensure_ascii=False, default=str)}\n\n"
         except Exception as exc:

@@ -180,3 +180,51 @@ class UserService:
         except Exception as e:
             print(f"Error llamando verify quiz score: {e}")
             return False
+
+    async def list_users(
+        self, authorization: Optional[str] = None, *, solo_activos: bool = False
+    ) -> list[dict[str, Any]]:
+        if not authorization:
+            return []
+        path = "/api/admin/users/active" if solo_activos else "/api/admin/users"
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                respuesta = await client.get(
+                    f"{self.base_url}{path}",
+                    headers=self._headers(authorization),
+                )
+                if respuesta.status_code == 200:
+                    data = respuesta.json()
+                    return data if isinstance(data, list) else []
+        except Exception as exc:
+            print(f"Error listando usuarios: {exc}")
+        return []
+
+    async def search_users(
+        self,
+        nombre: str = "",
+        discapacidad: str = "",
+        authorization: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if not authorization:
+            return []
+        params: dict[str, str] = {}
+        if (nombre or "").strip():
+            params["name"] = nombre.strip()
+        if (discapacidad or "").strip():
+            params["disability"] = discapacidad.strip()
+        if not params:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                respuesta = await client.get(
+                    f"{self.base_url}/api/admin/users/search",
+                    params=params,
+                    headers=self._headers(authorization),
+                )
+                if respuesta.status_code == 200:
+                    data = respuesta.json()
+                    return data if isinstance(data, list) else []
+        except Exception as exc:
+            print(f"Error buscando usuarios: {exc}")
+        return []

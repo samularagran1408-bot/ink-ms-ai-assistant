@@ -50,6 +50,7 @@ async def comando_voz(request: VozRequest, authorization: Optional[str] = Header
         request.texto,
         discapacidad,
         ctx.authorization,
+        roles=ctx.roles,
     )
 
     return {

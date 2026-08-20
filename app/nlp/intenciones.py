@@ -373,6 +373,36 @@ _DEFINICIONES = [
         palabras=("empezar", "principiante", "comenzar", "inicio", "novato", "objetivo", "meta"),
         prioridad=1.25,
     ),
+    Intencion(
+        nombre="crear_evento",
+        descripcion="Crear o proponer un evento (organizador)",
+        frases=(
+            "crear un evento", "crea un evento", "publicar un evento",
+            "organizar un evento nuevo", "arma un evento", "alta de evento",
+            "quiero crear el evento", "propón un evento para publicar",
+            "recomiendame un evento para crear",
+        ),
+        palabras=("publicar",),
+        prioridad=1.6,
+    ),
+    Intencion(
+        nombre="crear_deporte",
+        descripcion="Crear un deporte en el catálogo (entrenador)",
+        frases=(
+            "crear un deporte", "alta de deporte", "nuevo deporte",
+            "añade un deporte", "agrega un deporte", "dar de alta un deporte",
+        ),
+        prioridad=1.55,
+    ),
+    Intencion(
+        nombre="crear_rutina",
+        descripcion="Guardar o publicar una rutina en la plataforma",
+        frases=(
+            "publicar rutina", "guardar la rutina", "subir la rutina",
+            "crear rutina en la plataforma", "guardar rutina publicada",
+        ),
+        prioridad=1.55,
+    ),
 ]
 
 INTENCIONES: dict[str, Intencion] = {

@@ -17,6 +17,11 @@ _TOOL_A_ACCION: dict[str, str] = {
     "generar_rutina": "rutina",
     "listar_ejercicios": "ejercicios",
     "info_quiz": "quiz",
+    "consultar_mi_perfil": "perfil",
+    "estadisticas_usuario": "estadisticas",
+    "recomendar_evento_nuevo": "propuesta_evento",
+    "recomendar_deporte_nuevo": "propuesta_deporte",
+    "recomendar_rutina_nueva": "propuesta_rutina",
 }
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -126,6 +131,95 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "entrenador (cantidad de preguntas y umbrales)."
             ),
             "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "consultar_mi_perfil",
+            "description": (
+                "Lee el perfil del usuario autenticado (nombre, discapacidad, "
+                "roles). Úsala cuando pregunten por su perfil, datos o "
+                "adaptaciones personales. NUNCA pidas email ni ID: ya está "
+                "en la sesión."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "estadisticas_usuario",
+            "description": (
+                "Estadísticas del usuario de la sesión: inscripciones, "
+                "comparativa, riesgo y alertas. Un admin puede pasar "
+                "nombre_o_id de otra persona (nombre, no hace falta el ID)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "nombre_o_id": {
+                        "type": "string",
+                        "description": (
+                            "Solo admin/entrenador: nombre o id de otro usuario. "
+                            "Vacío = el de la sesión."
+                        ),
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recomendar_evento_nuevo",
+            "description": (
+                "Propone un evento nuevo listo para crear (organizador/admin): "
+                "deporte, fecha, hora, cupo y nombre. Tras proponerlo, ofrece "
+                "crearlo con crear_evento cuando el usuario confirme."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "idea": {
+                        "type": "string",
+                        "description": "Tema o deporte deseado, si lo mencionó.",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recomendar_deporte_nuevo",
+            "description": (
+                "Propone un deporte para dar de alta en el catálogo "
+                "(entrenador/admin), con nombre, dificultad y material."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "idea": {"type": "string", "description": "Nombre o enfoque del deporte."},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recomendar_rutina_nueva",
+            "description": (
+                "Genera una rutina adaptada y la deja lista para guardarla "
+                "en la plataforma (entrenador/admin) con crear_rutina."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objetivo": {"type": "string", "description": "Objetivo de la rutina."},
+                    "duracion_minutos": {"type": "integer"},
+                },
+            },
         },
     },
 ]

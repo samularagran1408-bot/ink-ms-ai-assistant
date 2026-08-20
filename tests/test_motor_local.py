@@ -43,6 +43,8 @@ def test_intenciones_reconocen_frases_naturales():
         "¿qué debo comer antes de entrenar?": "nutricion",
         "gracias!": "agradecimiento",
         "adiós": "despedida",
+        "crea un evento de natación": "crear_evento",
+        "mi progreso": "progreso",
     }
     fallos = []
     for mensaje, intencion in esperado.items():
