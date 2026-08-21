@@ -15,8 +15,19 @@ WRITE_TOOLS = frozenset(
         "desactivar_discapacidad",
         "reactivar_discapacidad",
         "crear_deporte",
+        "editar_deporte",
+        "eliminar_deporte",
         "crear_rutina",
         "publicar_rutina",
+        "registrar_adaptacion",
+        "editar_adaptacion",
+        "eliminar_adaptacion",
+        "bloquear_usuario",
+        "desactivar_usuario",
+        "activar_usuario",
+        "eliminar_usuario",
+        "asignar_rol",
+        "reemplazar_roles",
     }
 )
 
@@ -79,6 +90,43 @@ def resumen_write(nombre: str, args: dict[str, Any]) -> str:
         return f"Crear la rutina «{args.get('name') or '?'}» en la plataforma"
     if nombre == "publicar_rutina":
         return f"Publicar la rutina {args.get('routine_id') or '?'}"
+    if nombre == "editar_deporte":
+        return f"Editar el deporte {args.get('sport_id') or args.get('name') or '?'}"
+    if nombre == "eliminar_deporte":
+        return f"Eliminar el deporte {args.get('sport_id') or '?'}"
+    if nombre == "registrar_adaptacion":
+        return (
+            f"Registrar adaptación deporte {args.get('sport_id')} / "
+            f"discapacidad {args.get('disability_id')}"
+        )
+    if nombre == "editar_adaptacion":
+        return (
+            f"Editar adaptación deporte {args.get('sport_id')} / "
+            f"discapacidad {args.get('disability_id')}"
+        )
+    if nombre == "eliminar_adaptacion":
+        return (
+            f"Eliminar adaptación deporte {args.get('sport_id')} / "
+            f"discapacidad {args.get('disability_id')}"
+        )
+    if nombre == "bloquear_usuario":
+        return f"Bloquear a {args.get('nombre_o_email') or '?'}"
+    if nombre == "desactivar_usuario":
+        return f"Desactivar a {args.get('nombre_o_email') or '?'}"
+    if nombre == "activar_usuario":
+        return f"Activar a {args.get('nombre_o_email') or '?'}"
+    if nombre == "eliminar_usuario":
+        return f"Eliminar a {args.get('nombre_o_email') or '?'}"
+    if nombre == "asignar_rol":
+        return (
+            f"Asignar el rol {args.get('role_name') or '?'} a "
+            f"{args.get('nombre_o_email') or '?'}"
+        )
+    if nombre == "reemplazar_roles":
+        return (
+            f"Reemplazar roles de {args.get('nombre_o_email') or '?'} por "
+            f"{args.get('roles_csv') or '?'}"
+        )
     return f"Ejecutar {nombre}"
 
 

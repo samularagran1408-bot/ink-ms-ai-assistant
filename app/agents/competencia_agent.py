@@ -388,7 +388,7 @@ SOLO JSON:
         desventajas = desventajas or heuristico["desventajas"]
         recomendaciones = recomendaciones or heuristico["recomendaciones"]
 
-        return {
+        payload = {
             "estadisticas": estadisticas,
             "ventajas": ventajas,
             "desventajas": desventajas,
@@ -431,6 +431,8 @@ SOLO JSON:
                 "eventsCreated": events_created_perfil,
             },
         }
+        payload["vista"] = self._vista_analisis(payload)
+        return payload
 
     async def activar_modo(
         self,
@@ -469,16 +471,28 @@ SOLO JSON:
                     "actualizado": datetime.now(timezone.utc).isoformat(),
                 },
             )
+            mensaje = "Modo competencia desactivado. Vuelve a entrenamiento base."
+            retorno = [
+                "Reduce la intensidad un 20–30% durante 3–5 días.",
+                "Prioriza movilidad, técnica y sueño.",
+                "Retoma volumen progresivo antes de la siguiente meta.",
+            ]
             return {
                 "activo": False,
-                "mensaje": "Modo competencia desactivado. Vuelve a entrenamiento base.",
-                "recomendaciones_retorno": [
-                    "Reduce la intensidad un 20–30% durante 3–5 días.",
-                    "Prioriza movilidad, técnica y sueño.",
-                    "Retoma volumen progresivo antes de la siguiente meta.",
-                ],
+                "mensaje": mensaje,
+                "recomendaciones_retorno": retorno,
                 "usuario": usuario,
                 "rf": "RF53",
+                "vista": self._vista_modo(
+                    activo=False,
+                    objetivo=None,
+                    semanas=semanas,
+                    evento=None,
+                    plan={},
+                    nota=mensaje,
+                    analisis_base={},
+                    recomendaciones=retorno,
+                ),
             }
 
         objetivo_txt = objetivo or (
@@ -511,6 +525,12 @@ Sólo texto plano, sin JSON.
         }
         await self._guardar_modo(usuario_id, estado)
 
+        analisis_base = {
+            "ventajas": (analisis.get("ventajas") or [])[:3],
+            "desventajas": (analisis.get("desventajas") or [])[:3],
+            "recomendaciones": (analisis.get("recomendaciones") or [])[:3],
+        }
+        nota = nota_llm or plan.get("nota_local")
         return {
             "activo": True,
             "objetivo": objetivo_txt,
@@ -519,14 +539,191 @@ Sólo texto plano, sin JSON.
             "plan": plan,
             "checklist": plan.get("checklist") or [],
             "riesgos": plan.get("riesgos") or [],
-            "nota": nota_llm or plan.get("nota_local"),
-            "analisis_base": {
-                "ventajas": (analisis.get("ventajas") or [])[:3],
-                "desventajas": (analisis.get("desventajas") or [])[:3],
-                "recomendaciones": (analisis.get("recomendaciones") or [])[:3],
-            },
+            "nota": nota,
+            "analisis_base": analisis_base,
             "usuario": usuario,
             "rf": "RF53",
+            "vista": self._vista_modo(
+                activo=True,
+                objetivo=objetivo_txt,
+                semanas=semanas,
+                evento=proximo,
+                plan=plan,
+                nota=nota,
+                analisis_base=analisis_base,
+            ),
+        }
+
+    def _item_evento(self, evento: Optional[dict]) -> Optional[dict[str, Any]]:
+        if not isinstance(evento, dict) or not evento:
+            return None
+        cupos = evento.get("availableCapacity")
+        meta = [
+            x
+            for x in (
+                evento.get("fecha") or evento.get("eventDate"),
+                evento.get("ubicacion") or evento.get("location"),
+                f"{cupos} cupos" if cupos is not None else None,
+                "Inscrito" if evento.get("usuario_inscrito") else None,
+            )
+            if x
+        ]
+        return {
+            "titulo": evento.get("nombre") or evento.get("eventName") or "Evento",
+            "subtitulo": evento.get("deporte") or evento.get("sportName") or "",
+            "meta": meta,
+            "id": str(evento.get("id") or evento.get("eventId") or ""),
+        }
+
+    def _vista_analisis(self, analisis: dict[str, Any]) -> dict[str, Any]:
+        """Bloques listos para pintar (iconos + listas), sin JSON crudo."""
+        stats = analisis.get("estadisticas") or {}
+        usuario = analisis.get("usuario") or {}
+        proximos = analisis.get("proximos_eventos") or analisis.get("eventos") or []
+        return {
+            "tipo": "analisis",
+            "activo": False,
+            "titulo": "Panorama competitivo",
+            "perfil": {
+                "nombre": usuario.get("fullName") or "Usuario",
+                "discapacidad": usuario.get("disability") or "—",
+            },
+            "kpis": [
+                {
+                    "clave": "compatibles",
+                    "icono": "trophy",
+                    "valor": stats.get("eventos_compatibles_discapacidad") or 0,
+                    "label": "Eventos compatibles",
+                },
+                {
+                    "clave": "cupos",
+                    "icono": "calendar-days",
+                    "valor": stats.get("cupos_disponibles") or 0,
+                    "label": "Cupos libres",
+                },
+                {
+                    "clave": "inscripciones",
+                    "icono": "user",
+                    "valor": stats.get("inscripciones_usuario") or 0,
+                    "label": "Tus inscripciones",
+                },
+                {
+                    "clave": "deportes",
+                    "icono": "heart",
+                    "valor": stats.get("deportes_compatibles") or 0,
+                    "label": "Deportes adaptados",
+                },
+            ],
+            "ventajas": analisis.get("ventajas") or [],
+            "desventajas": analisis.get("desventajas") or [],
+            "recomendaciones": analisis.get("recomendaciones") or [],
+            "eventos": [
+                item
+                for e in proximos[:6]
+                if isinstance(e, dict)
+                for item in [self._item_evento(e)]
+                if item
+            ],
+            "fases": [],
+            "checklist": [],
+            "riesgos": [],
+            "objetivo": None,
+            "semanas": None,
+            "evento_objetivo": None,
+            "nota": None,
+        }
+
+    def _vista_modo(
+        self,
+        *,
+        activo: bool,
+        objetivo: Optional[str],
+        semanas: int,
+        evento: Optional[dict],
+        plan: dict[str, Any],
+        nota: Optional[str],
+        analisis_base: dict[str, Any],
+        recomendaciones: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Plan de competencia listo para pintar, sin serializar JSON al usuario."""
+        if not activo:
+            return {
+                "tipo": "modo",
+                "activo": False,
+                "titulo": "Modo competencia desactivado",
+                "nota": nota,
+                "recomendaciones": recomendaciones or [],
+                "kpis": [],
+                "ventajas": [],
+                "desventajas": [],
+                "eventos": [],
+                "fases": [],
+                "checklist": [],
+                "riesgos": [],
+                "objetivo": None,
+                "semanas": semanas,
+                "evento_objetivo": None,
+            }
+
+        evento_item = self._item_evento(evento)
+        fases = []
+        for fase in (plan or {}).get("fases") or []:
+            if not isinstance(fase, dict):
+                continue
+            fases.append(
+                {
+                    "semana": fase.get("semana"),
+                    "foco": fase.get("foco"),
+                    "intensidad": fase.get("intensidad"),
+                    "sesiones": fase.get("sesiones_sugeridas"),
+                    "nota": fase.get("nota"),
+                }
+            )
+        checklist = (plan or {}).get("checklist") or []
+        riesgos = (plan or {}).get("riesgos") or []
+        return {
+            "tipo": "modo",
+            "activo": True,
+            "titulo": "Modo competencia activo",
+            "objetivo": objetivo,
+            "semanas": semanas,
+            "nota": nota,
+            "evento_objetivo": evento_item,
+            "kpis": [
+                {
+                    "clave": "semanas",
+                    "icono": "calendar-days",
+                    "valor": semanas,
+                    "label": "Semanas de plan",
+                },
+                {
+                    "clave": "sesiones",
+                    "icono": "bolt",
+                    "valor": sum(int(f.get("sesiones") or 0) for f in fases),
+                    "label": "Sesiones sugeridas",
+                },
+                {
+                    "clave": "checklist",
+                    "icono": "clipboard-document-list",
+                    "valor": len(checklist),
+                    "label": "Puntos del plan",
+                },
+                {
+                    "clave": "riesgos",
+                    "icono": "exclamation-triangle",
+                    "valor": len(riesgos),
+                    "label": "Riesgos a vigilar",
+                },
+            ],
+            "fases": fases,
+            "checklist": checklist,
+            "riesgos": riesgos,
+            "ventajas": (analisis_base or {}).get("ventajas") or [],
+            "desventajas": (analisis_base or {}).get("desventajas") or [],
+            "recomendaciones": recomendaciones
+            or (analisis_base or {}).get("recomendaciones")
+            or [],
+            "eventos": [evento_item] if evento_item else [],
         }
 
     def _plan_preparacion(

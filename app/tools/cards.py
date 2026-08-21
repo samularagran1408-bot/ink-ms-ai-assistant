@@ -34,6 +34,9 @@ def construir_cards(
         "session_id",
         "pendiente_write",
         "cards",
+        "filtro",
+        "plan",
+        "analisis_base",
     }
     for clave, payload in list(datos.items()):
         if clave in skip:
@@ -238,6 +241,24 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
             }
         )
 
+    plan = bloque.get("plan")
+    if isinstance(plan, dict) and (plan.get("fases") or plan.get("checklist") or plan.get("objetivo")):
+        fases = plan.get("fases") or []
+        out.append(
+            {
+                "tipo": "alerta",
+                "tool": tool or "modo_competencia",
+                "titulo": str(plan.get("objetivo") or "Plan de competencia"),
+                "subtitulo": f"{len(fases)} semana(s)" if fases else None,
+                "meta": [str(x) for x in (plan.get("checklist") or [])[:2]],
+                "cta": {
+                    "accion": "ver_competencia",
+                    "label": "Ver plan",
+                    "id": "",
+                },
+            }
+        )
+
     vista = bloque.get("vista") or bloque.get("estadisticas")
     if isinstance(vista, dict) and vista.get("kpis"):
         for kpi in (vista.get("kpis") or [])[:4]:
@@ -251,6 +272,63 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
                     "subtitulo": str(kpi.get("valor")),
                     "meta": [str(kpi.get("icono") or "")],
                     "cta": {"accion": "ver_estadisticas", "label": "Ver estadísticas", "id": ""},
+                }
+            )
+
+    payload = bloque.get("data") if isinstance(bloque.get("data"), dict) else bloque
+    descarga = payload.get("descarga") if isinstance(payload, dict) else None
+    if not descarga and isinstance(bloque.get("descarga"), dict):
+        descarga = bloque["descarga"]
+    if isinstance(descarga, dict) and (descarga.get("path") or descarga.get("filename")):
+        out.append(
+            {
+                "tipo": "reporte",
+                "tool": tool or "exportar_pdf_dashboard",
+                "titulo": str(descarga.get("filename") or "Reporte PDF"),
+                "subtitulo": "Listo para descargar",
+                "meta": ["Dashboard InkluSport"],
+                "cta": {
+                    "accion": "descargar_pdf",
+                    "label": "Descargar PDF",
+                    "url": str(descarga.get("path") or "/api/dashboard/export/pdf"),
+                    "filename": str(
+                        descarga.get("filename") or "inklusport-dashboard.pdf"
+                    ),
+                },
+            }
+        )
+
+    usuarios = items if items else _lista_mcp(bloque)
+    if (
+        usuarios
+        and isinstance(usuarios[0], dict)
+        and ("email" in usuarios[0] or "fullName" in usuarios[0])
+        and not any(
+            k in usuarios[0]
+            for k in ("eventDate", "sportName", "availableCapacity", "difficulty")
+        )
+    ):
+        for u in usuarios[:6]:
+            if not isinstance(u, dict):
+                continue
+            nombre = str(u.get("fullName") or u.get("email") or "Usuario")
+            roles = u.get("roles")
+            roles_txt = ", ".join(str(r) for r in roles) if isinstance(roles, list) else ""
+            estado = "Bloqueado" if (u.get("blockedPermanently") or u.get("blockReason")) else (
+                "Inactivo" if u.get("isActive") is False else "Activo"
+            )
+            out.append(
+                {
+                    "tipo": "usuario",
+                    "tool": tool or "buscar_usuarios",
+                    "titulo": nombre,
+                    "subtitulo": roles_txt or u.get("disability"),
+                    "meta": [x for x in (u.get("email"), estado) if x],
+                    "cta": {
+                        "accion": "ver_usuarios",
+                        "label": "Ver en el panel",
+                        "id": str(u.get("email") or ""),
+                    },
                 }
             )
 

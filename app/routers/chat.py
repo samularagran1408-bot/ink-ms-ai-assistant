@@ -174,6 +174,7 @@ async def chat_stream(
     )
 
     async def generador():
+        yield ": connected\n\n"
         try:
             async for evento in agent.procesar_mensaje_stream(
                 ctx.id,
@@ -184,6 +185,9 @@ async def chat_stream(
                 ctx.roles,
                 ctx.perfil,
             ):
+                if evento.get("evento") == "respuesta" and isinstance(evento.get("datos"), dict):
+                    wrapped = _chat_response(ctx, evento["datos"], request.hilo_id)
+                    evento = {**evento, "datos": wrapped.model_dump()}
                 yield f"data: {json.dumps(evento, ensure_ascii=False, default=str)}\n\n"
         except Exception as exc:
             error = {"evento": "error", "detalle": str(exc)}

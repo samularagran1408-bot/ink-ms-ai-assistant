@@ -10,6 +10,7 @@ usuario puede recuperarlo por API; al LLM solo llegan resumen + últimos turnos.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import date, timedelta
@@ -54,16 +55,123 @@ _CON_HERRAMIENTA = frozenset({
     "crear_evento", "crear_deporte", "crear_rutina",
 })
 
+_ESTADOS_UI = {
+    "analizando_intencion": "Entendiendo tu mensaje…",
+    "agente_con_tools": "Decidiendo qué consultar…",
+    "confirmando_accion": "Procesando tu confirmación…",
+    "redactando_respuesta": "Redactando la respuesta…",
+    "consultando_conocimiento": "Consultando el conocimiento de InkluSport…",
+}
+
+_TOOLS_UI = {
+    "listar_eventos": "Consultando eventos publicados",
+    "listar_deportes": "Revisando el catálogo de deportes",
+    "listar_discapacidades": "Consultando discapacidades",
+    "listar_adaptaciones": "Buscando adaptaciones",
+    "generar_rutina": "Armando una rutina adaptada",
+    "listar_ejercicios": "Eligiendo ejercicios",
+    "info_quiz": "Revisando el quiz de aptitud",
+    "consultar_mi_perfil": "Leyendo tu perfil",
+    "estadisticas_usuario": "Calculando tus estadísticas",
+    "recomendar_evento_nuevo": "Proponiendo un evento",
+    "recomendar_deporte_nuevo": "Proponiendo un deporte",
+    "recomendar_rutina_nueva": "Preparando una rutina para publicar",
+    "eventos": "Consultando eventos publicados",
+    "deportes": "Revisando el catálogo de deportes",
+    "discapacidades": "Consultando discapacidades",
+    "adaptaciones": "Buscando adaptaciones",
+    "rutinas": "Armando una rutina adaptada",
+    "ejercicios": "Eligiendo ejercicios",
+    "quiz": "Revisando el quiz de aptitud",
+    "cuenta": "Leyendo tu perfil",
+    "progreso": "Calculando tus estadísticas",
+    "crear_evento": "Preparando el alta del evento",
+    "crear_deporte": "Preparando el alta del deporte",
+    "crear_rutina": "Preparando el alta de la rutina",
+    "inscripcion": "Revisando inscripciones",
+    "bloquear_usuario": "Bloqueando usuario",
+    "desactivar_usuario": "Desactivando usuario",
+    "activar_usuario": "Activando usuario",
+    "eliminar_usuario": "Eliminando usuario",
+    "asignar_rol": "Asignando rol",
+    "reemplazar_roles": "Actualizando roles",
+    "listar_usuarios": "Listando usuarios",
+    "buscar_usuarios": "Buscando usuarios",
+    "consultar_dashboard": "Consultando el dashboard",
+    "exportar_pdf_dashboard": "Preparando el PDF del dashboard",
+    "editar_deporte": "Editando el deporte",
+    "eliminar_deporte": "Eliminando el deporte",
+}
+
+
+def _evento_ui(
+    evento: str,
+    detalle: str,
+    estado: Optional[str] = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Evento SSE con texto legible para animar el chat."""
+    if evento == "estado":
+        mensaje = _ESTADOS_UI.get(detalle, "Trabajando en tu consulta…")
+    else:
+        label = _TOOLS_UI.get(detalle, "Consultando datos de la plataforma")
+        mensaje = f"{label} — listo" if estado == "listo" else f"{label}…"
+    payload: dict[str, Any] = {
+        "evento": evento,
+        "detalle": detalle,
+        "mensaje": mensaje,
+        **extra,
+    }
+    if estado:
+        payload["estado"] = estado
+    return payload
+
+
+class _EmisorEventos:
+    """Lista compatible con append() que también emite a la cola SSE."""
+
+    def __init__(self, cola: Optional[asyncio.Queue] = None):
+        self._items: list[dict[str, Any]] = []
+        self._cola = cola
+
+    def append(self, ev: dict[str, Any]) -> None:
+        if not isinstance(ev, dict):
+            return
+        if "mensaje" not in ev:
+            ev = _evento_ui(
+                str(ev.get("evento") or "estado"),
+                str(ev.get("detalle") or ""),
+                ev.get("estado"),
+                **{
+                    k: v
+                    for k, v in ev.items()
+                    if k not in {"evento", "detalle", "estado", "mensaje"}
+                },
+            )
+        self._items.append(ev)
+        if self._cola is not None:
+            self._cola.put_nowait(ev)
+
+    def __iter__(self):
+        return iter(self._items)
+
+
 _SISTEMA_TOOLS = (
     "Puedes usar herramientas para obtener o cambiar datos reales de InkluSport "
-    "(eventos, deportes, adaptaciones, inscripciones, discapacidades, usuarios). "
+    "(eventos, deportes, adaptaciones, inscripciones, discapacidades, usuarios, "
+    "roles y reportes PDF). "
     "El usuario YA está autenticado: NUNCA pidas su email, correo ni ID. "
     "Para su perfil llama consultar_mi_perfil o consultar_usuario con 'me'. "
     "Para inscripciones no hace falta user_id. "
     "Si un admin pregunta por otra persona, busca por nombre con buscar_usuarios "
     "y luego estadisticas_usuario; no pidas identificadores. "
+    "ADMIN: sí puedes bloquear, desactivar, activar y eliminar usuarios, "
+    "asignar o reemplazar roles, gestionar deportes/discapacidades/adaptaciones "
+    "y exportar el dashboard a PDF. Usa bloquear_usuario, activar_usuario, "
+    "eliminar_usuario, asignar_rol, exportar_pdf_dashboard, etc. "
+    "Nunca digas que no tienes herramienta para eso ni redirijas al panel. "
     "Organizador: si pide ideas o crear un evento, usa recomendar_evento_nuevo "
-    "y ofrece crearlo con crear_evento. "
+    "y ofrece crearlo con crear_evento. También puedes exportar el dashboard a PDF. "
     "Entrenador: si pide un deporte o rutina nueva, usa recomendar_deporte_nuevo "
     "o recomendar_rutina_nueva y ofrece crearlo en la plataforma. "
     "Las escrituras requieren que el usuario confirme; tú solo pide la tool. "
@@ -91,7 +199,7 @@ class ChatbotAgent:
         historial_llm: list[dict[str, Any]],
         clasificacion: dict[str, Any],
         *,
-        eventos: Optional[list[dict[str, Any]]] = None,
+        eventos: Optional[Any] = None,
         roles: Optional[list[str]] = None,
         conversacion_id: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
@@ -254,7 +362,7 @@ class ChatbotAgent:
         perfil: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Emite fases del agente (SSE) y cierra con la respuesta final."""
-        yield {"evento": "estado", "detalle": "analizando_intencion"}
+        yield _evento_ui("estado", "analizando_intencion")
         historial, cid_efectiva, resumen = await self.conversaciones.cargar_contexto_llm(
             usuario_id, conversacion_id or ""
         )
@@ -266,48 +374,86 @@ class ChatbotAgent:
         pendiente = await self.conversaciones.leer_pendiente_write(
             usuario_id, conversacion_id
         )
-        eventos_side: list[dict[str, Any]] = []
+        cola: asyncio.Queue = asyncio.Queue()
+        eventos_side = _EmisorEventos(cola)
+
         if pendiente:
-            yield {"evento": "estado", "detalle": "confirmando_accion"}
-            resultado = await self._resolver_pendiente(
-                usuario_id,
-                mensaje,
-                clave_discapacidad,
-                authorization,
-                roles,
-                pendiente,
-            )
+            yield _evento_ui("estado", "confirmando_accion")
+
+            async def _trabajo_pendiente():
+                try:
+                    res = await self._resolver_pendiente(
+                        usuario_id,
+                        mensaje,
+                        clave_discapacidad,
+                        authorization,
+                        roles,
+                        pendiente,
+                    )
+                    await cola.put({"evento": "_done", "resultado": res})
+                except Exception as exc:
+                    await cola.put({"evento": "_error", "detalle": str(exc)})
+
+            tarea = asyncio.create_task(_trabajo_pendiente())
         else:
             clasificacion = clasificar(mensaje)
             intencion = clasificacion["nombre"]
 
             if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
-                yield {"evento": "estado", "detalle": "agente_con_tools"}
+                yield _evento_ui("estado", "agente_con_tools")
             elif intencion in _CON_HERRAMIENTA:
-                yield {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
+                yield _evento_ui("herramienta", intencion, "ejecutando")
             elif self.llm.disponible and intencion not in _SOCIAL:
-                yield {"evento": "estado", "detalle": "redactando_respuesta"}
+                yield _evento_ui("estado", "redactando_respuesta")
             else:
-                yield {"evento": "estado", "detalle": "consultando_conocimiento"}
+                yield _evento_ui("estado", "consultando_conocimiento")
 
-            resultado = await self._resolver_turno(
-                usuario_id,
-                mensaje,
-                clave_discapacidad,
-                authorization,
-                historial_llm,
-                clasificacion,
-                eventos=eventos_side,
-                roles=roles,
-                conversacion_id=conversacion_id,
-                perfil=perfil,
-            )
-            resultado["intencion"] = resultado.get("intencion") or intencion or "general"
-            resultado["confianza"] = clasificacion["confianza"]
-            resultado["terminos_detectados"] = clasificacion["terminos"]
+            async def _trabajo_turno():
+                try:
+                    res = await self._resolver_turno(
+                        usuario_id,
+                        mensaje,
+                        clave_discapacidad,
+                        authorization,
+                        historial_llm,
+                        clasificacion,
+                        eventos=eventos_side,
+                        roles=roles,
+                        conversacion_id=conversacion_id,
+                        perfil=perfil,
+                    )
+                    res["intencion"] = res.get("intencion") or intencion or "general"
+                    res["confianza"] = clasificacion["confianza"]
+                    res["terminos_detectados"] = clasificacion["terminos"]
+                    await cola.put({"evento": "_done", "resultado": res})
+                except Exception as exc:
+                    await cola.put({"evento": "_error", "detalle": str(exc)})
 
-        for ev in eventos_side:
-            yield ev
+            tarea = asyncio.create_task(_trabajo_turno())
+
+        resultado: dict[str, Any] | None = None
+        try:
+            while True:
+                ev = await cola.get()
+                tipo = ev.get("evento")
+                if tipo == "_done":
+                    resultado = ev.get("resultado") or {}
+                    break
+                if tipo == "_error":
+                    raise RuntimeError(ev.get("detalle") or "Error en el agente")
+                yield ev
+            await tarea
+        except Exception:
+            if not tarea.done():
+                tarea.cancel()
+            try:
+                await tarea
+            except (asyncio.CancelledError, Exception):
+                pass
+            raise
+
+        if not resultado:
+            raise RuntimeError("El agente no devolvió respuesta")
 
         resultado["conversacion_id"] = conversacion_id
         resultado["agente"] = "inklusport-profesional"
@@ -331,7 +477,7 @@ class ChatbotAgent:
         usuario_id: str,
         *,
         intencion_hint: Optional[str] = None,
-        eventos: Optional[list[dict[str, Any]]] = None,
+        eventos: Optional[Any] = None,
         roles: Optional[list[str]] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
@@ -470,6 +616,8 @@ class ChatbotAgent:
                     continue
 
                 texto_final = (resultado_llm.content or "").strip()
+                if eventos is not None:
+                    eventos.append(_evento_ui("estado", "redactando_respuesta"))
                 if not texto_final and herramientas_usadas:
                     texto_final = await self._sintesis_tras_tools(
                         mensaje, discapacidad, historial, datos_acumulados

@@ -84,6 +84,14 @@ async def _crear_indices() -> None:
         await db[COL_CONOCIMIENTO].create_index("intencion", unique=True)
         await db[COL_QUIZ].create_index([("rol", 1), ("id", 1)], unique=True)
         await db[COL_QUIZZES].create_index("quiz_id", unique=True)
-        await db[COL_CONVERSACIONES].create_index([("usuario_id", 1), ("estado", 1)])
+        await db[COL_CONVERSACIONES].create_index(
+            [("usuario_id", 1), ("conversacion_id", 1)],
+            unique=True,
+            name="usuario_conversacion",
+        )
+        await db[COL_CONVERSACIONES].create_index(
+            [("usuario_id", 1), ("estado", 1), ("ultima_interaccion", -1)],
+            name="usuario_estado_reciente",
+        )
     except Exception as exc:
         print(f"No se pudieron crear todos los índices: {exc}")

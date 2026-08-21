@@ -403,6 +403,38 @@ _DEFINICIONES = [
         ),
         prioridad=1.55,
     ),
+    Intencion(
+        nombre="bloquear_usuario",
+        descripcion="Bloquear, desactivar o eliminar un usuario (admin)",
+        frases=(
+            "bloquear usuario", "bloquear a", "desactivar usuario",
+            "desactivar a", "eliminar usuario", "borrar usuario",
+            "banear usuario", "suspender usuario", "activar usuario",
+            "desbloquear usuario",
+        ),
+        palabras=("bloquear", "desactivar", "banear", "suspender", "desbloquear"),
+        prioridad=1.7,
+    ),
+    Intencion(
+        nombre="gestionar_roles",
+        descripcion="Asignar o cambiar roles de un usuario (admin)",
+        frases=(
+            "asignar rol", "cambiar rol", "darle rol de entrenador",
+            "hacerlo organizador", "quitar rol", "reemplazar roles",
+        ),
+        palabras=("rol", "roles"),
+        prioridad=1.55,
+    ),
+    Intencion(
+        nombre="exportar_pdf",
+        descripcion="Exportar dashboard o reportes a PDF (admin)",
+        frases=(
+            "exportar pdf", "descargar pdf", "exportar el dashboard",
+            "reporte en pdf", "generar pdf", "bajar el pdf",
+        ),
+        palabras=("pdf", "exportar"),
+        prioridad=1.65,
+    ),
 ]
 
 INTENCIONES: dict[str, Intencion] = {

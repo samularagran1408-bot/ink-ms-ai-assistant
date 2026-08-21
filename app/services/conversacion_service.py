@@ -16,6 +16,7 @@ from typing import Any, Optional
 from app.config import settings
 from app.database.mongodb import get_db
 from app.database.repositorio import COL_CONVERSACIONES
+from app.tools.cards import construir_cards
 
 # Remitentes persistidos
 REMITENTE_USUARIO = "usuario"
@@ -150,6 +151,11 @@ class ConversacionService:
             "intencion": resultado.get("intencion"),
             "fuente": resultado.get("fuente"),
             "fecha": ahora,
+            "cards": construir_cards(
+                resultado.get("datos") or {},
+                resultado.get("herramientas_usadas") or [],
+            )[:8],
+            "sugerencias": list(resultado.get("sugerencias") or [])[:6],
         }
 
         try:
@@ -287,6 +293,8 @@ class ConversacionService:
                     "intencion": m.get("intencion"),
                     "fuente": m.get("fuente"),
                     "fecha": m.get("fecha"),
+                    "cards": m.get("cards") if isinstance(m.get("cards"), list) else [],
+                    "sugerencias": m.get("sugerencias") if isinstance(m.get("sugerencias"), list) else [],
                 }
                 for m in mensajes
             ],
@@ -355,7 +363,7 @@ class ConversacionService:
         if db is None:
             return None
         try:
-            cid = (conversacion_id or "").strip()
+            cid = (conversacion_id or "").strip()[:80]
             if cid:
                 return await db[COL_CONVERSACIONES].find_one(
                     {"usuario_id": usuario_id, "conversacion_id": cid},

@@ -85,7 +85,7 @@ class Settings:
 
     # Tool-calling estilo OpenAI/MCP: el LLM elige tools; si falla → motor local.
     LLM_TOOL_CALLING_ENABLED = _bool("LLM_TOOL_CALLING_ENABLED", True)
-    LLM_TOOL_MAX_RONDAS = _int("LLM_TOOL_MAX_RONDAS", 2)
+    LLM_TOOL_MAX_RONDAS = _int("LLM_TOOL_MAX_RONDAS", 3)
 
     # Historial de chat: anti-basura en Mongo y en el prompt del LLM
     CHAT_MAX_MENSAJES_POR_CONVERSACION = _int("CHAT_MAX_MENSAJES_POR_CONVERSACION", 40)
