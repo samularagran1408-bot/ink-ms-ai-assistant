@@ -12,6 +12,51 @@ from app.services.user_service import UserService
 COL_MODO_COMPETENCIA = "modo_competencia"
 
 
+def progreso_desde_inscripciones(inscritos: list, rutinas: list | None = None) -> dict[str, Any]:
+    """Mismas cifras que la tarjeta Progreso del panel principal del atleta."""
+    inscritos = inscritos or []
+    en_espera = sum(1 for e in inscritos if e.get("waitlistPosition") is not None)
+    confirmados = max(0, len(inscritos) - en_espera)
+    asistidos = sum(
+        1
+        for e in inscritos
+        if e.get("attended") is True and e.get("waitlistPosition") is None
+    )
+    tasa = round((asistidos * 100) / confirmados) if confirmados else 0
+    return {
+        "asistencia_pct": tasa,
+        "asistidos": asistidos,
+        "confirmados": confirmados,
+        "inscripciones": len(inscritos),
+        "rutinas": len(rutinas or []),
+        "lista_espera": en_espera,
+    }
+
+
+def progreso_plan_desde_doc(doc: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Semana actual y % del plan según la fecha de activación del modo."""
+    if not doc or not doc.get("activo"):
+        return {"semanas": 0, "semana_actual": 0, "plan_pct": 0, "activado_en": None}
+    semanas = max(1, min(int(doc.get("semanas") or 3), 8))
+    raw = doc.get("activado_en") or doc.get("actualizado")
+    semana_actual = 1
+    if raw:
+        try:
+            start = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            dias = max(0, (datetime.now(timezone.utc) - start).days)
+            semana_actual = min(semanas, dias // 7 + 1)
+        except (TypeError, ValueError):
+            semana_actual = 1
+    return {
+        "semanas": semanas,
+        "semana_actual": semana_actual,
+        "plan_pct": round((semana_actual * 100) / semanas),
+        "activado_en": raw,
+    }
+
+
 def _fecha(valor) -> date | None:
     """Interpreta la fecha de un evento, que sports entrega como ISO o lista."""
     if isinstance(valor, str):
@@ -114,6 +159,7 @@ class CompetenciaAgent:
         proximo: dict | None,
         inscritos: list,
         perfil: dict,
+        progreso_panel: Optional[dict] = None,
     ) -> dict[str, list[str]]:
         """Lectura del panorama competitivo a partir de los datos de users y sports.
 
@@ -149,6 +195,17 @@ class CompetenciaAgent:
             ventajas.append(
                 f"Ya acumulas {estadisticas['asistencias']} asistencia(s), que cuentan para "
                 "la verificación como organizador."
+            )
+        panel = progreso_panel or {}
+        if panel.get("asistencia_pct"):
+            ventajas.append(
+                f"En tu panel llevas {panel['asistencia_pct']}% de asistencia "
+                f"({panel.get('asistidos')}/{panel.get('confirmados')} eventos)."
+            )
+        if panel.get("rutinas"):
+            ventajas.append(
+                f"Tienes {panel['rutinas']} rutina(s) activa(s) en el panel; "
+                "el modo competencia usa ese avance como base de preparación."
             )
 
         if not deportes_compatibles:
@@ -188,6 +245,15 @@ class CompetenciaAgent:
                 "Tu perfil no tiene discapacidad registrada, así que el análisis usa el "
                 "catálogo completo en lugar de filtrarlo para ti."
             )
+        if panel.get("confirmados") and not panel.get("asistidos"):
+            desventajas.append(
+                "En el panel tienes eventos inscritos pero 0% de asistencia registrada."
+            )
+        if not panel.get("rutinas"):
+            desventajas.append(
+                "Aún no estás en ninguna rutina del panel, así que el plan de competencia "
+                "no tiene sesiones publicadas asociadas a tu progreso."
+            )
 
         if proximo:
             recomendaciones.append(
@@ -214,6 +280,11 @@ class CompetenciaAgent:
             recomendaciones.append(
                 "Pide a un entrenador verificado que registre las adaptaciones de tu "
                 "discapacidad y después publica eventos con esos deportes."
+            )
+        if not panel.get("rutinas"):
+            recomendaciones.append(
+                "Únete a una rutina desde el panel principal para que el modo competencia "
+                "se alimente de tu progreso real (asistencia y sesiones)."
             )
         recomendaciones.append(
             f"Pídeme una rutina adaptada al deporte del evento que elijas para llegar "
@@ -256,6 +327,7 @@ class CompetenciaAgent:
         ]
 
         inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
+        rutinas = await self.sports_service.get_rutinas_usuario(usuario_id, authorization)
         if email and email != usuario_id:
             extra = await self.sports_service.get_eventos_usuario(email, authorization)
             vistos = {e.get("eventId") or e.get("id") for e in inscritos}
@@ -352,7 +424,9 @@ class CompetenciaAgent:
             "asistencias": max(asistidos_insc, events_attended_perfil),
             "eventos_creados": events_created_perfil,
             "total_eventos": len(eventos_filtrados),
+            "rutinas_panel": len(rutinas or []),
         }
+        progreso_panel = progreso_desde_inscripciones(inscritos, rutinas)
 
         prompt = f"""
 Analiza el panorama competitivo inclusivo.
@@ -383,6 +457,7 @@ SOLO JSON:
             proximo=proximo,
             inscritos=inscritos,
             perfil=user_data,
+            progreso_panel=progreso_panel,
         )
         ventajas = ventajas or heuristico["ventajas"]
         desventajas = desventajas or heuristico["desventajas"]
@@ -430,6 +505,7 @@ SOLO JSON:
                 "eventsAttended": events_attended_perfil,
                 "eventsCreated": events_created_perfil,
             },
+            "progreso_panel": progreso_panel,
         }
         payload["vista"] = self._vista_analisis(payload)
         return payload
@@ -482,6 +558,7 @@ SOLO JSON:
                 "mensaje": mensaje,
                 "recomendaciones_retorno": retorno,
                 "usuario": usuario,
+                "progreso_panel": analisis.get("progreso_panel") or {},
                 "rf": "RF53",
                 "vista": self._vista_modo(
                     activo=False,
@@ -492,6 +569,7 @@ SOLO JSON:
                     nota=mensaje,
                     analisis_base={},
                     recomendaciones=retorno,
+                    progreso_panel=analisis.get("progreso_panel") or {},
                 ),
             }
 
@@ -514,14 +592,19 @@ Sólo texto plano, sin JSON.
 """
         nota_llm = await self.llm.texto(prompt, canonizar(discapacidad))
 
+        ahora = datetime.now(timezone.utc).isoformat()
+        evento_item = self._item_evento(proximo)
         estado = {
             "usuario_id": usuario_id,
             "activo": True,
             "evento_id": (proximo or {}).get("id") or evento_id,
+            "evento_snapshot": evento_item,
             "objetivo": objetivo_txt,
             "semanas": semanas,
             "plan": plan,
-            "actualizado": datetime.now(timezone.utc).isoformat(),
+            "activado_en": ahora,
+            "actualizado": ahora,
+            "progreso_panel": analisis.get("progreso_panel") or {},
         }
         await self._guardar_modo(usuario_id, estado)
 
@@ -531,10 +614,14 @@ Sólo texto plano, sin JSON.
             "recomendaciones": (analisis.get("recomendaciones") or [])[:3],
         }
         nota = nota_llm or plan.get("nota_local")
+        progreso_panel = analisis.get("progreso_panel") or {}
+        plan_prog = progreso_plan_desde_doc(estado)
         return {
             "activo": True,
             "objetivo": objetivo_txt,
             "semanas": semanas,
+            "semana_actual": plan_prog.get("semana_actual"),
+            "plan_pct": plan_prog.get("plan_pct"),
             "evento_objetivo": proximo,
             "plan": plan,
             "checklist": plan.get("checklist") or [],
@@ -542,6 +629,7 @@ Sólo texto plano, sin JSON.
             "nota": nota,
             "analisis_base": analisis_base,
             "usuario": usuario,
+            "progreso_panel": progreso_panel,
             "rf": "RF53",
             "vista": self._vista_modo(
                 activo=True,
@@ -551,12 +639,21 @@ Sólo texto plano, sin JSON.
                 plan=plan,
                 nota=nota,
                 analisis_base=analisis_base,
+                progreso_panel=progreso_panel,
+                progreso_plan=plan_prog,
             ),
         }
 
     def _item_evento(self, evento: Optional[dict]) -> Optional[dict[str, Any]]:
         if not isinstance(evento, dict) or not evento:
             return None
+        if evento.get("titulo") and ("meta" in evento or "subtitulo" in evento):
+            return {
+                "titulo": evento.get("titulo") or "Evento",
+                "subtitulo": evento.get("subtitulo") or "",
+                "meta": list(evento.get("meta") or []),
+                "id": str(evento.get("id") or evento.get("eventId") or ""),
+            }
         cupos = evento.get("availableCapacity")
         meta = [
             x
@@ -580,6 +677,7 @@ Sólo texto plano, sin JSON.
         stats = analisis.get("estadisticas") or {}
         usuario = analisis.get("usuario") or {}
         proximos = analisis.get("proximos_eventos") or analisis.get("eventos") or []
+        panel = analisis.get("progreso_panel") or {}
         return {
             "tipo": "analisis",
             "activo": False,
@@ -588,7 +686,20 @@ Sólo texto plano, sin JSON.
                 "nombre": usuario.get("fullName") or "Usuario",
                 "discapacidad": usuario.get("disability") or "—",
             },
+            "progreso_panel": panel,
             "kpis": [
+                {
+                    "clave": "asistencia",
+                    "icono": "chart-bar",
+                    "valor": f"{panel.get('asistencia_pct') or 0}%",
+                    "label": "Asistencia del panel",
+                },
+                {
+                    "clave": "rutinas",
+                    "icono": "heart",
+                    "valor": panel.get("rutinas") or 0,
+                    "label": "Rutinas del panel",
+                },
                 {
                     "clave": "compatibles",
                     "icono": "trophy",
@@ -596,22 +707,10 @@ Sólo texto plano, sin JSON.
                     "label": "Eventos compatibles",
                 },
                 {
-                    "clave": "cupos",
-                    "icono": "calendar-days",
-                    "valor": stats.get("cupos_disponibles") or 0,
-                    "label": "Cupos libres",
-                },
-                {
                     "clave": "inscripciones",
                     "icono": "user",
-                    "valor": stats.get("inscripciones_usuario") or 0,
+                    "valor": stats.get("inscripciones_usuario") or panel.get("inscripciones") or 0,
                     "label": "Tus inscripciones",
-                },
-                {
-                    "clave": "deportes",
-                    "icono": "heart",
-                    "valor": stats.get("deportes_compatibles") or 0,
-                    "label": "Deportes adaptados",
                 },
             ],
             "ventajas": analisis.get("ventajas") or [],
@@ -644,8 +743,12 @@ Sólo texto plano, sin JSON.
         nota: Optional[str],
         analisis_base: dict[str, Any],
         recomendaciones: Optional[list[str]] = None,
+        progreso_panel: Optional[dict[str, Any]] = None,
+        progreso_plan: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Plan de competencia listo para pintar, sin serializar JSON al usuario."""
+        panel = progreso_panel or {}
+        plan_prog = progreso_plan or {}
         if not activo:
             return {
                 "tipo": "modo",
@@ -653,7 +756,7 @@ Sólo texto plano, sin JSON.
                 "titulo": "Modo competencia desactivado",
                 "nota": nota,
                 "recomendaciones": recomendaciones or [],
-                "kpis": [],
+                "kpis": self._kpis_panel(panel),
                 "ventajas": [],
                 "desventajas": [],
                 "eventos": [],
@@ -663,6 +766,9 @@ Sólo texto plano, sin JSON.
                 "objetivo": None,
                 "semanas": semanas,
                 "evento_objetivo": None,
+                "progreso_panel": panel,
+                "semana_actual": 0,
+                "plan_pct": 0,
             }
 
         evento_item = self._item_evento(evento)
@@ -681,40 +787,46 @@ Sólo texto plano, sin JSON.
             )
         checklist = (plan or {}).get("checklist") or []
         riesgos = (plan or {}).get("riesgos") or []
+        semana_actual = plan_prog.get("semana_actual") or 1
+        plan_pct = plan_prog.get("plan_pct") or round((1 * 100) / max(semanas, 1))
+        kpis = [
+            {
+                "clave": "asistencia",
+                "icono": "chart-bar",
+                "valor": f"{panel.get('asistencia_pct') or 0}%",
+                "label": "Asistencia del panel",
+            },
+            {
+                "clave": "plan",
+                "icono": "trophy",
+                "valor": f"{plan_pct}%",
+                "label": f"Plan (sem. {semana_actual}/{semanas})",
+            },
+            {
+                "clave": "rutinas",
+                "icono": "heart",
+                "valor": panel.get("rutinas") or 0,
+                "label": "Rutinas del panel",
+            },
+            {
+                "clave": "checklist",
+                "icono": "clipboard-document-list",
+                "valor": len(checklist),
+                "label": "Puntos del plan",
+            },
+        ]
         return {
             "tipo": "modo",
             "activo": True,
             "titulo": "Modo competencia activo",
             "objetivo": objetivo,
             "semanas": semanas,
+            "semana_actual": semana_actual,
+            "plan_pct": plan_pct,
             "nota": nota,
             "evento_objetivo": evento_item,
-            "kpis": [
-                {
-                    "clave": "semanas",
-                    "icono": "calendar-days",
-                    "valor": semanas,
-                    "label": "Semanas de plan",
-                },
-                {
-                    "clave": "sesiones",
-                    "icono": "bolt",
-                    "valor": sum(int(f.get("sesiones") or 0) for f in fases),
-                    "label": "Sesiones sugeridas",
-                },
-                {
-                    "clave": "checklist",
-                    "icono": "clipboard-document-list",
-                    "valor": len(checklist),
-                    "label": "Puntos del plan",
-                },
-                {
-                    "clave": "riesgos",
-                    "icono": "exclamation-triangle",
-                    "valor": len(riesgos),
-                    "label": "Riesgos a vigilar",
-                },
-            ],
+            "progreso_panel": panel,
+            "kpis": kpis,
             "fases": fases,
             "checklist": checklist,
             "riesgos": riesgos,
@@ -780,6 +892,89 @@ Sólo texto plano, sin JSON.
                 "Mantén técnica limpia y carga progresiva."
             ),
         }
+
+    def _kpis_panel(self, panel: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "clave": "asistencia",
+                "icono": "chart-bar",
+                "valor": f"{panel.get('asistencia_pct') or 0}%",
+                "label": "Asistencia del panel",
+            },
+            {
+                "clave": "rutinas",
+                "icono": "heart",
+                "valor": panel.get("rutinas") or 0,
+                "label": "Rutinas del panel",
+            },
+            {
+                "clave": "confirmados",
+                "icono": "calendar-days",
+                "valor": panel.get("confirmados") or 0,
+                "label": "Eventos confirmados",
+            },
+            {
+                "clave": "espera",
+                "icono": "user",
+                "valor": panel.get("lista_espera") or 0,
+                "label": "Lista de espera",
+            },
+        ]
+
+    async def obtener_modo(
+        self, usuario_id: str, authorization: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Estado persistido del modo competencia + progreso del panel principal."""
+        doc = await self._leer_modo(usuario_id)
+        progreso = await self._calcular_progreso_panel(usuario_id, authorization)
+        activo = bool(doc.get("activo"))
+        plan = doc.get("plan") if activo else {}
+        plan_prog = progreso_plan_desde_doc(doc) if activo else {}
+        evento = doc.get("evento_snapshot") if activo else None
+        objetivo = doc.get("objetivo") if activo else None
+        semanas = int(doc.get("semanas") or 3)
+        return {
+            "activo": activo,
+            "objetivo": objetivo,
+            "semanas": semanas if activo else None,
+            "semana_actual": plan_prog.get("semana_actual") if activo else 0,
+            "plan_pct": plan_prog.get("plan_pct") if activo else 0,
+            "evento_objetivo": evento,
+            "plan": plan or {},
+            "progreso_panel": progreso,
+            "activado_en": doc.get("activado_en") if activo else None,
+            "rf": "RF53",
+            "vista": self._vista_modo(
+                activo=activo,
+                objetivo=objetivo,
+                semanas=semanas,
+                evento=evento if isinstance(evento, dict) else None,
+                plan=plan if isinstance(plan, dict) else {},
+                nota=None if activo else "Modo competencia desactivado.",
+                analisis_base={},
+                progreso_panel=progreso,
+                progreso_plan=plan_prog,
+            ),
+        }
+
+    async def _calcular_progreso_panel(
+        self, usuario_id: str, authorization: Optional[str] = None
+    ) -> dict[str, Any]:
+        inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
+        rutinas = await self.sports_service.get_rutinas_usuario(usuario_id, authorization)
+        return progreso_desde_inscripciones(inscritos, rutinas)
+
+    async def _leer_modo(self, usuario_id: str) -> dict[str, Any]:
+        db = get_db()
+        if db is None:
+            return {"usuario_id": usuario_id, "activo": False}
+        try:
+            doc = await db[COL_MODO_COMPETENCIA].find_one(
+                {"usuario_id": usuario_id}, {"_id": 0}
+            )
+            return doc or {"usuario_id": usuario_id, "activo": False}
+        except Exception:
+            return {"usuario_id": usuario_id, "activo": False}
 
     async def _guardar_modo(self, usuario_id: str, doc: dict[str, Any]) -> None:
         db = get_db()

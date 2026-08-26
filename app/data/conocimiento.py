@@ -562,6 +562,22 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
         "sugerencias": ["Confirmo", "Cancelar"],
         "accion": "propuesta_rutina",
     },
+    "exportar_pdf": {
+        "respuestas": [
+            "Preparo el PDF para que lo descargues desde el chat.",
+            "El reporte en PDF queda listo en la tarjeta de descarga.",
+        ],
+        "sugerencias": ["Descargar PDF"],
+        "accion": "exportar_pdf",
+    },
+    "listar_usuarios": {
+        "respuestas": [
+            "Reviso el listado de usuarios según el filtro que pediste.",
+            "Te muestro las cuentas que coinciden, sin mezclar otros estados.",
+        ],
+        "sugerencias": ["Lista los usuarios inactivos", "Exporta el dashboard a PDF"],
+        "accion": "usuarios",
+    },
 }
 
 

@@ -43,6 +43,10 @@ def test_intenciones_reconocen_frases_naturales():
         "¿qué debo comer antes de entrenar?": "nutricion",
         "gracias!": "agradecimiento",
         "adiós": "despedida",
+        "Exporta el dashboard a PDF": "exportar_pdf",
+        "Lista los usuarios inactivos": "listar_usuarios",
+        "exportar como pdf": "exportar_pdf",
+        "exporta como pdf": "exportar_pdf",
         "crea un evento de natación": "crear_evento",
         "mi progreso": "progreso",
     }
@@ -56,6 +60,32 @@ def test_intenciones_reconocen_frases_naturales():
 
 def test_mensaje_fuera_de_dominio_no_se_clasifica():
     assert clasificar("¿cuál es la capital de Francia?")["nombre"] is None
+
+
+def test_pedidos_admin_pdf_e_inactivos():
+    from app.nlp.admin_pedido import (
+        filtrar_usuarios,
+        pide_exportar_pdf,
+        pide_inactivos,
+        pide_pdf_auditoria,
+    )
+
+    assert pide_exportar_pdf("exporta como pdf")
+    assert pide_exportar_pdf("Exporta el dashboard a PDF")
+    assert pide_pdf_auditoria("exportar los audit logs a PDF")
+    assert not pide_pdf_auditoria("exporta como pdf")
+    assert pide_inactivos("Lista los usuarios inactivos")
+    assert not pide_inactivos("Lista los usuarios activos")
+
+    usuarios = [
+        {"fullName": "Ana", "isActive": True},
+        {"fullName": "Luis", "isActive": False},
+        {"fullName": "Mia", "isActive": False},
+    ]
+    inactivos = filtrar_usuarios(usuarios, solo_inactivos=True)
+    assert [u["fullName"] for u in inactivos] == ["Luis", "Mia"]
+    activos = filtrar_usuarios(usuarios, solo_activos=True)
+    assert [u["fullName"] for u in activos] == ["Ana"]
 
 
 def test_canonizacion_de_discapacidad():

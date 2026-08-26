@@ -280,25 +280,73 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
     if not descarga and isinstance(bloque.get("descarga"), dict):
         descarga = bloque["descarga"]
     if isinstance(descarga, dict) and (descarga.get("path") or descarga.get("filename")):
+        kind = str(descarga.get("kind") or "dashboard")
+        titulo = (
+            "PDF de auditoría"
+            if kind == "auditoria"
+            else str(descarga.get("filename") or "Reporte PDF")
+        )
         out.append(
             {
                 "tipo": "reporte",
-                "tool": tool or "exportar_pdf_dashboard",
-                "titulo": str(descarga.get("filename") or "Reporte PDF"),
+                "tool": tool or (
+                    "exportar_pdf_auditoria" if kind == "auditoria" else "exportar_pdf_dashboard"
+                ),
+                "titulo": titulo,
                 "subtitulo": "Listo para descargar",
-                "meta": ["Dashboard InkluSport"],
+                "meta": [
+                    "Auditoría InkluSport" if kind == "auditoria" else "Dashboard InkluSport"
+                ],
                 "cta": {
                     "accion": "descargar_pdf",
                     "label": "Descargar PDF",
-                    "url": str(descarga.get("path") or "/api/dashboard/export/pdf"),
-                    "filename": str(
-                        descarga.get("filename") or "inklusport-dashboard.pdf"
+                    "url": str(
+                        descarga.get("path")
+                        or (
+                            "/api/dashboard/export/analysis/pdf"
+                            if kind == "auditoria"
+                            else "/api/dashboard/export/pdf"
+                        )
                     ),
+                    "filename": str(
+                        descarga.get("filename")
+                        or (
+                            "inklusport-audit.pdf"
+                            if kind == "auditoria"
+                            else "inklusport-dashboard.pdf"
+                        )
+                    ),
+                    "kind": kind,
+                    "method": str(descarga.get("method") or ("POST" if kind == "auditoria" else "GET")),
                 },
             }
         )
 
     usuarios = items if items else _lista_mcp(bloque)
+    filtro = str(bloque.get("filtro") or "").lower()
+    if filtro == "inactivos":
+        usuarios = [
+            u
+            for u in usuarios
+            if isinstance(u, dict) and u.get("isActive") is not True
+        ]
+    elif filtro == "activos":
+        usuarios = [
+            u
+            for u in usuarios
+            if isinstance(u, dict) and u.get("isActive") is not False
+        ]
+    if filtro in {"inactivos", "activos", "todos"}:
+        out.append(
+            {
+                "tipo": "kpi",
+                "tool": tool or "listar_usuarios",
+                "titulo": f"Usuarios {filtro}",
+                "subtitulo": str(bloque.get("total") if bloque.get("total") is not None else len(usuarios)),
+                "meta": [f"{len(usuarios)} en el listado"],
+                "cta": {"accion": "ver_usuarios", "label": "Ver en el panel", "id": ""},
+            }
+        )
     if (
         usuarios
         and isinstance(usuarios[0], dict)
@@ -308,7 +356,7 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
             for k in ("eventDate", "sportName", "availableCapacity", "difficulty")
         )
     ):
-        for u in usuarios[:6]:
+        for u in usuarios[:8]:
             if not isinstance(u, dict):
                 continue
             nombre = str(u.get("fullName") or u.get("email") or "Usuario")
@@ -317,6 +365,10 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
             estado = "Bloqueado" if (u.get("blockedPermanently") or u.get("blockReason")) else (
                 "Inactivo" if u.get("isActive") is False else "Activo"
             )
+            if filtro == "inactivos":
+                estado = "Inactivo"
+            elif filtro == "activos":
+                estado = "Activo"
             out.append(
                 {
                     "tipo": "usuario",
@@ -327,7 +379,7 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
                     "cta": {
                         "accion": "ver_usuarios",
                         "label": "Ver en el panel",
-                        "id": str(u.get("email") or ""),
+                        "id": str(u.get("id") or u.get("email") or ""),
                     },
                 }
             )

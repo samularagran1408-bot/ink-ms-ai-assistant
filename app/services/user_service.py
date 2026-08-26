@@ -200,6 +200,24 @@ class UserService:
             print(f"Error listando usuarios: {exc}")
         return []
 
+    async def list_inactive_users(
+        self, authorization: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        if not authorization:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                respuesta = await client.get(
+                    f"{self.base_url}/api/admin/users/inactive",
+                    headers=self._headers(authorization),
+                )
+                if respuesta.status_code == 200:
+                    data = respuesta.json()
+                    return data if isinstance(data, list) else []
+        except Exception as exc:
+            print(f"Error listando usuarios inactivos: {exc}")
+        return []
+
     async def search_users(
         self,
         nombre: str = "",

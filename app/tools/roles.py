@@ -104,6 +104,7 @@ TOOLS_POR_ROL: dict[str, list[str]] = {
         "contar_usuarios",
         "consultar_dashboard",
         "exportar_pdf_dashboard",
+        "exportar_pdf_auditoria",
         "editar_deporte",
         "eliminar_deporte",
         "registrar_adaptacion",

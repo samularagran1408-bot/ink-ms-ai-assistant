@@ -427,12 +427,27 @@ _DEFINICIONES = [
     ),
     Intencion(
         nombre="exportar_pdf",
-        descripcion="Exportar dashboard o reportes a PDF (admin)",
+        descripcion="Exportar dashboard, auditoría o reportes a PDF (admin)",
         frases=(
             "exportar pdf", "descargar pdf", "exportar el dashboard",
             "reporte en pdf", "generar pdf", "bajar el pdf",
+            "exportar audit logs", "exportar auditoria", "pdf de auditoria",
+            "exportar los logs", "descargar auditoria", "exporta como pdf",
+            "exportar como pdf", "pdf de los logs",
         ),
         palabras=("pdf", "exportar"),
+        prioridad=1.7,
+    ),
+    Intencion(
+        nombre="listar_usuarios",
+        descripcion="Listar usuarios activos o inactivos (admin)",
+        frases=(
+            "usuarios inactivos", "lista los usuarios inactivos",
+            "listar usuarios inactivos", "muestra los inactivos",
+            "usuarios activos", "lista de usuarios", "que usuarios hay",
+            "listar usuarios", "usuarios desactivados",
+        ),
+        palabras=("inactivos", "inactivo"),
         prioridad=1.65,
     ),
 ]

@@ -42,6 +42,22 @@ async def analizar_rendimiento(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/modo")
+@router.get("/modo/{usuario_id}")
+async def obtener_modo_competencia(
+    usuario_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
+    """RF53 — estado del modo competencia conectado al progreso del panel."""
+    try:
+        ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
+        return await agent.obtener_modo(ctx.id, authorization=ctx.authorization)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/modo")
 @router.post("/modo/{usuario_id}")
 async def modo_competencia(

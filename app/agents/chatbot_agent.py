@@ -25,6 +25,14 @@ from app.database.repositorio import obtener_catalogo_ejercicios, obtener_conoci
 from app.motor.rutinas import generar_rutina
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
+from app.nlp.admin_pedido import (
+    es_verdadero,
+    filtrar_usuarios,
+    pide_activos,
+    pide_exportar_pdf,
+    pide_inactivos,
+    pide_pdf_auditoria,
+)
 from app.services.conversacion_service import ConversacionService
 from app.services.llm_service import LLMService, _limpiar, system_prompt
 from app.services.mcp_client import llamar_tool, listar_tools_openai
@@ -53,6 +61,7 @@ _CON_HERRAMIENTA = frozenset({
     "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
     "discapacidades", "adaptaciones", "quiz", "progreso", "cuenta",
     "crear_evento", "crear_deporte", "crear_rutina",
+    "exportar_pdf", "listar_usuarios",
 })
 
 _ESTADOS_UI = {
@@ -99,6 +108,8 @@ _TOOLS_UI = {
     "buscar_usuarios": "Buscando usuarios",
     "consultar_dashboard": "Consultando el dashboard",
     "exportar_pdf_dashboard": "Preparando el PDF del dashboard",
+    "exportar_pdf_auditoria": "Preparando el PDF de auditoría",
+    "exportar_pdf": "Preparando el PDF",
     "editar_deporte": "Editando el deporte",
     "eliminar_deporte": "Eliminando el deporte",
 }
@@ -167,9 +178,13 @@ _SISTEMA_TOOLS = (
     "y luego estadisticas_usuario; no pidas identificadores. "
     "ADMIN: sí puedes bloquear, desactivar, activar y eliminar usuarios, "
     "asignar o reemplazar roles, gestionar deportes/discapacidades/adaptaciones "
-    "y exportar el dashboard a PDF. Usa bloquear_usuario, activar_usuario, "
-    "eliminar_usuario, asignar_rol, exportar_pdf_dashboard, etc. "
-    "Nunca digas que no tienes herramienta para eso ni redirijas al panel. "
+    "y exportar PDF. "
+    "Si piden usuarios INACTIVOS, llama listar_usuarios con solo_inactivos=true "
+    "y no mezcles cuentas activas. Si piden activos, solo_activos=true. "
+    "Si piden exportar o descargar PDF (dashboard, reportes o audit logs), "
+    "usa exportar_pdf_dashboard o exportar_pdf_auditoria. "
+    "Nunca digas que no tienes herramienta para eso ni redirijas al panel "
+    "ni a soporte técnico. "
     "Organizador: si pide ideas o crear un evento, usa recomendar_evento_nuevo "
     "y ofrece crearlo con crear_evento. También puedes exportar el dashboard a PDF. "
     "Entrenador: si pide un deporte o rutina nueva, usa recomendar_deporte_nuevo "
@@ -228,6 +243,18 @@ class ChatbotAgent:
                 perfil=perfil,
             )
             if con_tools:
+                con_tools = await self._completar_tools_obligatorias(
+                    con_tools,
+                    mensaje,
+                    usuario_id,
+                    clave_discapacidad,
+                    authorization,
+                    roles or [],
+                    perfil,
+                    intencion or clasificacion.get("mejor_candidato"),
+                    historial_llm,
+                    eventos,
+                )
                 return con_tools
 
         # 3) Herramienta clara → datos reales + pulido LLM si hay
@@ -543,7 +570,9 @@ class ChatbotAgent:
                             args = {}
                         if not isinstance(args, dict):
                             args = {}
-                        args = self._fijar_actor(nombre, args, usuario_id, roles)
+                        args = self._fijar_actor(
+                            nombre, args, usuario_id, roles, mensaje=mensaje
+                        )
 
                         if es_write(nombre):
                             pendiente = {
@@ -725,6 +754,7 @@ class ChatbotAgent:
         args: dict[str, Any],
         usuario_id: str,
         roles: list[str],
+        mensaje: str = "",
     ) -> dict[str, Any]:
         args = dict(args or {})
         claves = self._claves_rol(roles)
@@ -750,6 +780,13 @@ class ChatbotAgent:
             args["trainer_id"] = usuario_id
         if nombre == "estadisticas_usuario" and not es_admin:
             args.pop("nombre_o_id", None)
+        if nombre == "listar_usuarios":
+            if pide_inactivos(mensaje):
+                args["solo_inactivos"] = True
+                args["solo_activos"] = False
+            elif pide_activos(mensaje):
+                args["solo_activos"] = True
+                args["solo_inactivos"] = False
         return args
 
     async def _definiciones_tools(
@@ -793,6 +830,14 @@ class ChatbotAgent:
                     nombre, args, usuario_id, discapacidad, authorization, mensaje_usuario,
                     roles=roles, perfil=perfil,
                 )
+            if nombre in ("listar_usuarios", "exportar_pdf_dashboard", "exportar_pdf_auditoria"):
+                accion = "usuarios" if nombre == "listar_usuarios" else "exportar_pdf"
+                return await self._enriquecer(
+                    accion, usuario_id, discapacidad, authorization, mensaje_usuario,
+                    roles=roles, perfil=perfil, args=args,
+                )
+        if nombre == "listar_usuarios" and isinstance(mcp_datos, dict):
+            mcp_datos = self._aplicar_filtro_usuarios(mcp_datos, args, mensaje_usuario)
         texto = json.dumps(mcp_datos, ensure_ascii=False, default=str)[:6000]
         return texto, mcp_datos if isinstance(mcp_datos, dict) else {"data": mcp_datos}
 
@@ -832,7 +877,9 @@ class ChatbotAgent:
             }
 
         nombre = str(pendiente.get("tool") or "")
-        args = self._fijar_actor(nombre, pendiente.get("args") or {}, usuario_id, roles)
+        args = self._fijar_actor(
+            nombre, pendiente.get("args") or {}, usuario_id, roles, mensaje=mensaje
+        )
         texto, datos = await self._ejecutar_herramienta(
             nombre, args, usuario_id, discapacidad, authorization, mensaje, roles
         )
@@ -873,7 +920,9 @@ class ChatbotAgent:
                         f"Datos de herramientas: "
                         f"{json.dumps(datos, ensure_ascii=False, default=str)[:3500]}\n"
                         "Responde en español, máximo 6 frases, sin Markdown y sin pegar JSON. "
-                        "No pidas email ni ID. No inventes datos."
+                        "No pidas email ni ID. No inventes datos. "
+                        "Si hay un PDF listo, dile que pulse Descargar PDF; no digas que "
+                        "no puedes exportar. Si el filtro es inactivos, no menciones activos."
                     ),
                 },
             ],
@@ -1183,6 +1232,8 @@ class ChatbotAgent:
             "propuesta_evento": self._datos_propuesta_evento,
             "propuesta_deporte": self._datos_propuesta_deporte,
             "propuesta_rutina": self._datos_propuesta_rutina,
+            "exportar_pdf": self._datos_exportar_pdf,
+            "usuarios": self._datos_usuarios,
         }
         manejador = acciones.get(accion)
         if not manejador:
@@ -1201,6 +1252,8 @@ class ChatbotAgent:
                 "propuesta_evento",
                 "propuesta_deporte",
                 "propuesta_rutina",
+                "exportar_pdf",
+                "usuarios",
             ):
                 return await manejador(
                     usuario_id, discapacidad, authorization, mensaje, **extra
@@ -1646,3 +1699,195 @@ class ChatbotAgent:
             "Responde Confirmo para crearla (quedará en borrador hasta que la publiques)."
         )
         return texto, {**datos_rutina, "pendiente_write": pendiente}
+
+    def _tool_obligatoria(
+        self,
+        intencion: Optional[str],
+        mensaje: str,
+        usadas: list[str],
+        roles: list[str],
+    ) -> Optional[tuple[str, dict[str, Any]]]:
+        claves = self._claves_rol(roles)
+        es_admin = "admin" in claves
+        es_staff = bool(claves & {"admin", "organizador"})
+        usadas_set = {h for h in usadas if h}
+        if es_staff and (
+            intencion == "exportar_pdf" or pide_exportar_pdf(mensaje)
+        ):
+            if not usadas_set & {"exportar_pdf_dashboard", "exportar_pdf_auditoria"}:
+                if es_admin and pide_pdf_auditoria(mensaje):
+                    return ("exportar_pdf_auditoria", {})
+                return ("exportar_pdf_dashboard", {})
+        if es_admin and (intencion == "listar_usuarios" or pide_inactivos(mensaje)):
+            if "listar_usuarios" not in usadas_set:
+                args: dict[str, Any] = {}
+                if pide_inactivos(mensaje):
+                    args["solo_inactivos"] = True
+                elif pide_activos(mensaje):
+                    args["solo_activos"] = True
+                return ("listar_usuarios", args)
+        return None
+
+    async def _completar_tools_obligatorias(
+        self,
+        resultado: dict[str, Any],
+        mensaje: str,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        roles: list[str],
+        perfil: Optional[dict[str, Any]],
+        intencion: Optional[str],
+        historial: list[dict[str, Any]],
+        eventos: Optional[Any],
+    ) -> dict[str, Any]:
+        usadas = [h for h in (resultado.get("herramientas_usadas") or []) if h]
+        forzar = self._tool_obligatoria(intencion, mensaje, usadas, roles)
+        if not forzar:
+            return resultado
+        nombre, args = forzar
+        args = self._fijar_actor(nombre, args, usuario_id, roles, mensaje=mensaje)
+        if eventos is not None:
+            eventos.append(
+                {"evento": "herramienta", "detalle": nombre, "estado": "ejecutando"}
+            )
+        texto, datos = await self._ejecutar_herramienta(
+            nombre, args, usuario_id, discapacidad, authorization, mensaje, roles, perfil
+        )
+        if eventos is not None:
+            eventos.append(
+                {"evento": "herramienta", "detalle": nombre, "estado": "listo"}
+            )
+        datos_acc = dict(resultado.get("datos") or {})
+        if datos:
+            datos_acc[nombre] = datos
+        usadas = usadas + [nombre]
+        sintesis = await self._sintesis_tras_tools(
+            mensaje, discapacidad, historial, datos_acc
+        )
+        out = dict(resultado)
+        out["respuesta"] = sintesis or texto
+        out["datos"] = datos_acc
+        out["herramientas_usadas"] = usadas
+        out["tool_calling"] = True
+        return out
+
+    def _aplicar_filtro_usuarios(
+        self,
+        datos: dict[str, Any],
+        args: dict[str, Any],
+        mensaje: str = "",
+    ) -> dict[str, Any]:
+        solo_inactivos = es_verdadero(args.get("solo_inactivos")) or pide_inactivos(mensaje)
+        solo_activos = (
+            not solo_inactivos
+            and (es_verdadero(args.get("solo_activos")) or pide_activos(mensaje))
+        )
+        crudo = datos.get("data")
+        if isinstance(crudo, dict):
+            for clave in ("content", "items", "users", "data"):
+                valor = crudo.get(clave)
+                if isinstance(valor, list):
+                    crudo = valor
+                    break
+        lista = crudo if isinstance(crudo, list) else []
+        filtrada = filtrar_usuarios(
+            lista, solo_inactivos=solo_inactivos, solo_activos=solo_activos
+        )
+        out = dict(datos)
+        out["data"] = filtrada
+        out["filtro"] = (
+            "inactivos" if solo_inactivos else ("activos" if solo_activos else "todos")
+        )
+        out["total"] = len(filtrada)
+        return out
+
+    async def _datos_exportar_pdf(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        roles = kwargs.get("roles") or []
+        claves = self._claves_rol(roles)
+        if not (claves & {"admin", "organizador"}):
+            return (
+                "La exportación a PDF está disponible para administrador u organizador.",
+                {},
+            )
+        hoy = date.today().isoformat()
+        if "admin" in claves and pide_pdf_auditoria(mensaje):
+            return (
+                "El PDF de auditoría está listo. Pulsa Descargar PDF en la tarjeta.",
+                {
+                    "descarga": {
+                        "path": "/api/dashboard/export/analysis/pdf",
+                        "filename": f"inklusport-audit-{hoy}.pdf",
+                        "method": "POST",
+                        "kind": "auditoria",
+                    }
+                },
+            )
+        return (
+            "El PDF del dashboard está listo. Pulsa Descargar PDF en la tarjeta.",
+            {
+                "descarga": {
+                    "path": "/api/dashboard/export/pdf",
+                    "filename": f"inklusport-dashboard-{hoy}.pdf",
+                    "method": "GET",
+                    "kind": "dashboard",
+                }
+            },
+        )
+
+    async def _datos_usuarios(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        roles = kwargs.get("roles") or []
+        if "admin" not in self._claves_rol(roles):
+            return ("Solo un administrador puede listar usuarios de la plataforma.", {})
+        args = kwargs.get("args") or {}
+        solo_inactivos = es_verdadero(args.get("solo_inactivos")) or pide_inactivos(mensaje)
+        solo_activos = (
+            not solo_inactivos
+            and (es_verdadero(args.get("solo_activos")) or pide_activos(mensaje))
+        )
+        if solo_inactivos:
+            lista = await self.user_service.list_inactive_users(authorization)
+            filtro = "inactivos"
+        elif solo_activos:
+            lista = await self.user_service.list_users(authorization, solo_activos=True)
+            filtro = "activos"
+        else:
+            lista = await self.user_service.list_users(authorization)
+            filtro = "todos"
+        filtrada = filtrar_usuarios(
+            lista, solo_inactivos=solo_inactivos, solo_activos=solo_activos
+        )
+        etiqueta = {
+            "inactivos": "inactivos",
+            "activos": "activos",
+            "todos": "registrados",
+        }[filtro]
+        if not filtrada:
+            return (
+                f"No hay usuarios {etiqueta} en este momento.",
+                {"filtro": filtro, "total": 0, "data": []},
+            )
+        lineas = [f"Usuarios {etiqueta} ({len(filtrada)}):"]
+        for usuario in filtrada[:8]:
+            nombre = usuario.get("fullName") or usuario.get("email") or "Usuario"
+            estado = "activo" if usuario.get("isActive") is not False else "inactivo"
+            lineas.append(f"- {nombre} · {estado}")
+        return "\n".join(lineas), {
+            "filtro": filtro,
+            "total": len(filtrada),
+            "data": filtrada,
+        }

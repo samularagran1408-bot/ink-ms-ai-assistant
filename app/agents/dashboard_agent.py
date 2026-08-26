@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from app.agents.competencia_agent import progreso_plan_desde_doc
 from app.agents.historial_agent import HistorialAgent
 from app.agents.riesgo_agent import RiesgoAgent
 from app.database.mongodb import get_db
@@ -131,12 +132,17 @@ class DashboardAgent:
             )
             if not doc:
                 return {"activo": False}
+            plan_prog = progreso_plan_desde_doc(doc)
             return {
                 "activo": bool(doc.get("activo")),
                 "evento_id": doc.get("evento_id"),
                 "objetivo": doc.get("objetivo"),
                 "semanas": doc.get("semanas"),
+                "semana_actual": plan_prog.get("semana_actual"),
+                "plan_pct": plan_prog.get("plan_pct"),
+                "evento_objetivo": doc.get("evento_snapshot"),
                 "actualizado": doc.get("actualizado"),
+                "activado_en": doc.get("activado_en"),
             }
         except Exception:
             return {"activo": False}
@@ -163,6 +169,12 @@ class DashboardAgent:
         insc_ev = comp.get("inscripciones_eventos") or {}
         rpe = comp.get("sesiones_rpe") or {}
         nivel = str((riesgo_snap or {}).get("nivel") or (riesgo_snap or {}).get("riesgo") or "bajo")
+        confirmados = sum(1 for e in (eventos or []) if e.get("waitlistPosition") is None)
+        asistidos = sum(
+            1 for e in (eventos or [])
+            if e.get("attended") is True and e.get("waitlistPosition") is None
+        )
+        asistencia_pct = round((asistidos * 100) / confirmados) if confirmados else 0
         return {
             "perfil": {
                 "nombre": perfil.get("fullName") or "Usuario",
@@ -214,6 +226,15 @@ class DashboardAgent:
             "tendencia": (comparativa or {}).get("tendencia") or "estable",
             "modo_competencia": bool((modo or {}).get("activo")),
             "objetivo_competencia": (modo or {}).get("objetivo"),
+            "semana_competencia": (modo or {}).get("semana_actual"),
+            "plan_pct": (modo or {}).get("plan_pct"),
+            "progreso_panel": {
+                "asistencia_pct": asistencia_pct,
+                "asistidos": asistidos,
+                "confirmados": confirmados,
+                "rutinas": len(rutinas or []),
+                "lista_espera": len(eventos or []) - confirmados,
+            },
             "alertas": alertas,
             "eventos": [
                 {
@@ -270,6 +291,18 @@ class DashboardAgent:
             lineas.append(f"- RPE reciente: {kpis['rpe']['valor']}")
         if vista.get("tendencia"):
             lineas.append(f"- Tendencia: {vista['tendencia']}")
+        panel = vista.get("progreso_panel") or {}
+        if panel:
+            lineas.append(
+                f"- Progreso del panel: {panel.get('asistencia_pct') or 0}% asistencia, "
+                f"{panel.get('rutinas') or 0} rutina(s)"
+            )
+        if vista.get("modo_competencia"):
+            obj = vista.get("objetivo_competencia") or "plan activo"
+            semana = vista.get("semana_competencia")
+            plan_pct = vista.get("plan_pct")
+            extra = f" (semana {semana}, {plan_pct}%)" if semana else ""
+            lineas.append(f"- Modo competencia: {obj}{extra}")
         for alerta in (vista.get("alertas") or [])[:3]:
             lineas.append(f"- Alerta: {alerta}")
         for ev in (vista.get("eventos") or [])[:3]:
