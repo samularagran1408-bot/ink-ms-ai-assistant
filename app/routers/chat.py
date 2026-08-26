@@ -43,6 +43,11 @@ class ChatRequestAuth(BaseModel):
         default=None,
         description="Alias de conversacion_id (compatibilidad Postman/front)",
     )
+    limitacion: Optional[str] = Field(
+        default=None,
+        description="Dolor o limitación a marcar en rojo en el dibujo del cuerpo",
+        max_length=400,
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -57,6 +62,11 @@ class ChatRequestAuth(BaseModel):
             for clave in ("message", "text", "prompt", "query"):
                 if data.get(clave):
                     data["mensaje"] = data[clave]
+                    break
+        if not data.get("limitacion"):
+            for clave in ("limitation", "dolor", "pain"):
+                if data.get(clave):
+                    data["limitacion"] = data[clave]
                     break
         return data
 
@@ -114,6 +124,8 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
         herramientas_usadas=herramientas,
         cards=cards,
         mcp=mcp,
+        cuerpo=(datos_crudos.get("cuerpo") if isinstance(datos_crudos, dict) else None)
+        or resultado.get("cuerpo"),
     )
 
 
@@ -150,6 +162,7 @@ async def chat(
             request.hilo_id,
             ctx.roles,
             ctx.perfil,
+            request.limitacion,
         )
         return _chat_response(ctx, resultado, request.hilo_id)
     except HTTPException:
@@ -184,6 +197,7 @@ async def chat_stream(
                 request.hilo_id,
                 ctx.roles,
                 ctx.perfil,
+                request.limitacion,
             ):
                 if evento.get("evento") == "respuesta" and isinstance(evento.get("datos"), dict):
                     wrapped = _chat_response(ctx, evento["datos"], request.hilo_id)

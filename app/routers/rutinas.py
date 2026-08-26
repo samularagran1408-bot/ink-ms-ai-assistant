@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.agents.rutinas_agent import RutinasAgent
 from app.data.ejercicios import CATALOGO_EJERCICIOS, PAUTAS_DISCAPACIDAD
 from app.deps.contexto import discapacidad_efectiva, resolver_contexto
+from app.motor.cuerpo import mapa_corporal
 from app.motor.rutinas import adaptacion_de, generar_rutina
 from app.nlp.discapacidad import canonizar
 
@@ -99,6 +100,8 @@ async def adaptar_ejercicio(
             "pauta": PAUTAS_DISCAPACIDAD.get(discapacidad, {}).get("pauta"),
             "discapacidad": discapacidad,
             "usuario_id": ctx.id,
+            "limitacion": request.limitacion,
+            "cuerpo": mapa_corporal(request.nombre_ejercicio or "", request.limitacion),
             "rf": "RF42",
         }
 
@@ -116,6 +119,11 @@ async def adaptar_ejercicio(
         "discapacidad": discapacidad,
         "usuario_id": ctx.id,
         "rf": "RF42",
+        "limitacion": request.limitacion,
+        "cuerpo": mapa_corporal(
+            f"{ejercicio.get('nombre') or ''} {request.limitacion or ''}",
+            request.limitacion,
+        ),
     }
     if request.limitacion:
         lim = request.limitacion.lower()

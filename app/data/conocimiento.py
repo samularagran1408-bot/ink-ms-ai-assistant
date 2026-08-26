@@ -6,7 +6,7 @@ repita literalmente la misma frase, adaptaciones por tipo de discapacidad y una
 datos reales de los otros microservicios.
 
 Acciones soportadas por el agente: eventos | rutina | deportes | discapacidades |
-adaptaciones | ejercicios | quiz.
+adaptaciones | ejercicios | quiz | cuerpo.
 """
 
 from typing import Any
@@ -317,7 +317,11 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
                       "propulsión y refuerza rotadores y estiramiento de pectoral. Si "
                       "persiste, consulta a fisioterapia.",
         },
-        "sugerencias": ["Puedo generarte una rutina de baja intensidad y movilidad"],
+        "sugerencias": [
+            "Puedo generarte una rutina de baja intensidad y movilidad",
+            "Dibuja el cuerpo y marca dónde me duele",
+        ],
+        "accion": "cuerpo",
     },
     "motivacion": {
         "respuestas": [

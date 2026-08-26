@@ -15,6 +15,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Reutiliza el id para mantener historial entre turnos",
     )
+    limitacion: Optional[str] = Field(
+        default=None,
+        description="Dolor o limitación corporal a marcar en el dibujo del cuerpo",
+    )
 
 
 class ChatResponse(BaseModel):
@@ -35,6 +39,10 @@ class ChatResponse(BaseModel):
     mcp: Optional[dict[str, Any]] = Field(
         default=None,
         description="Metadatos del protocolo interno de tools (estilo MCP)",
+    )
+    cuerpo: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Dibujo del cuerpo con zonas de dolor/limitación en rojo",
     )
 
 

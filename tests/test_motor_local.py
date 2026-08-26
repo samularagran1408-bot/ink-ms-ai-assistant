@@ -155,6 +155,18 @@ def test_banco_de_quiz_es_consistente():
             assert pregunta["explicacion"]
 
 
+def test_mapa_corporal_marca_rodilla_izquierda():
+    from app.motor.cuerpo import extraer_zonas, mapa_corporal, debe_dibujar
+
+    assert "rodilla_izq" in extraer_zonas("me duele la rodilla izquierda")
+    assert "rodilla_der" not in extraer_zonas("me duele la rodilla izquierda")
+    assert set(extraer_zonas("dolor de hombros")) >= {"hombro_izq", "hombro_der"}
+    assert debe_dibujar("me duele el hombro", None, "lesiones")
+    mapa = mapa_corporal("pinchazo", "limitación lumbar")
+    assert "lumbar" in mapa["zonas_dolor"]
+    assert mapa["limitacion"] == "limitación lumbar"
+
+
 def test_barajado_de_opciones_conserva_la_respuesta_correcta():
     from app.agents.quiz_agent import QuizAgent
 

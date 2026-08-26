@@ -156,6 +156,8 @@ class ConversacionService:
                 resultado.get("herramientas_usadas") or [],
             )[:8],
             "sugerencias": list(resultado.get("sugerencias") or [])[:6],
+            "cuerpo": resultado.get("cuerpo")
+            or ((resultado.get("datos") or {}).get("cuerpo") if isinstance(resultado.get("datos"), dict) else None),
         }
 
         try:
@@ -295,6 +297,7 @@ class ConversacionService:
                     "fecha": m.get("fecha"),
                     "cards": m.get("cards") if isinstance(m.get("cards"), list) else [],
                     "sugerencias": m.get("sugerencias") if isinstance(m.get("sugerencias"), list) else [],
+                    "cuerpo": m.get("cuerpo") if isinstance(m.get("cuerpo"), dict) else None,
                 }
                 for m in mensajes
             ],

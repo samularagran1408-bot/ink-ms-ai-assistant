@@ -37,6 +37,7 @@ def construir_cards(
         "filtro",
         "plan",
         "analisis_base",
+        "cuerpo",
     }
     for clave, payload in list(datos.items()):
         if clave in skip:

@@ -120,6 +120,7 @@ TOOLS_LOCALES = (
     "info_quiz",
     "consultar_mi_perfil",
     "estadisticas_usuario",
+    "dibujar_cuerpo",
 )
 
 

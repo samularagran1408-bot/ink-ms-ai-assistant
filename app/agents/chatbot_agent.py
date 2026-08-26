@@ -23,6 +23,7 @@ from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
 from app.data.quiz_banco import BANCOS
 from app.database.repositorio import obtener_catalogo_ejercicios, obtener_conocimiento
 from app.motor.rutinas import generar_rutina
+from app.motor.cuerpo import debe_dibujar, mapa_corporal
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
 from app.nlp.admin_pedido import (
@@ -61,7 +62,7 @@ _CON_HERRAMIENTA = frozenset({
     "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
     "discapacidades", "adaptaciones", "quiz", "progreso", "cuenta",
     "crear_evento", "crear_deporte", "crear_rutina",
-    "exportar_pdf", "listar_usuarios",
+    "exportar_pdf", "listar_usuarios", "lesiones",
 })
 
 _ESTADOS_UI = {
@@ -112,6 +113,8 @@ _TOOLS_UI = {
     "exportar_pdf": "Preparando el PDF",
     "editar_deporte": "Editando el deporte",
     "eliminar_deporte": "Eliminando el deporte",
+    "dibujar_cuerpo": "Dibujando el mapa corporal",
+    "cuerpo": "Marcando el dolor en el cuerpo",
 }
 
 
@@ -328,6 +331,7 @@ class ChatbotAgent:
         conversacion_id: Optional[str] = None,
         roles: Optional[list[str]] = None,
         perfil: Optional[dict[str, Any]] = None,
+        limitacion: Optional[str] = None,
     ) -> dict[str, Any]:
         historial, cid_efectiva, resumen = await self.conversaciones.cargar_contexto_llm(
             usuario_id, conversacion_id or ""
@@ -372,6 +376,7 @@ class ChatbotAgent:
         resultado["agente"] = "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
         resultado["historial_con_resumen"] = bool(resumen)
+        resultado = self._adjuntar_cuerpo(resultado, mensaje, limitacion)
 
         await self.conversaciones.guardar_turno(
             usuario_id, conversacion_id, mensaje, resultado
@@ -387,6 +392,7 @@ class ChatbotAgent:
         conversacion_id: Optional[str] = None,
         roles: Optional[list[str]] = None,
         perfil: Optional[dict[str, Any]] = None,
+        limitacion: Optional[str] = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Emite fases del agente (SSE) y cierra con la respuesta final."""
         yield _evento_ui("estado", "analizando_intencion")
@@ -486,6 +492,7 @@ class ChatbotAgent:
         resultado["agente"] = "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
         resultado["historial_con_resumen"] = bool(resumen)
+        resultado = self._adjuntar_cuerpo(resultado, mensaje, limitacion)
 
         await self.conversaciones.guardar_turno(
             usuario_id, conversacion_id, mensaje, resultado
@@ -959,6 +966,7 @@ class ChatbotAgent:
             "crear_evento": "propuesta_evento",
             "crear_deporte": "propuesta_deporte",
             "crear_rutina": "propuesta_rutina",
+            "lesiones": "cuerpo",
         }.get(intencion)
         if accion:
             complemento, datos = await self._enriquecer(
@@ -1205,6 +1213,58 @@ class ChatbotAgent:
         _ROTACION[clave] = indice
         return variantes[indice % len(variantes)]
 
+    def _adjuntar_cuerpo(
+        self,
+        resultado: dict[str, Any],
+        mensaje: str,
+        limitacion: Optional[str],
+    ) -> dict[str, Any]:
+        datos = resultado.get("datos") if isinstance(resultado.get("datos"), dict) else {}
+        previo = datos.get("cuerpo") if isinstance(datos.get("cuerpo"), dict) else None
+        if not debe_dibujar(mensaje, limitacion, resultado.get("intencion")) and not previo:
+            return resultado
+        mapa = mapa_corporal(mensaje, limitacion)
+        if previo and len(previo.get("zonas_dolor") or []) > len(mapa.get("zonas_dolor") or []):
+            mapa = previo
+        datos = dict(datos)
+        datos["cuerpo"] = mapa
+        resultado["datos"] = datos
+        resultado["cuerpo"] = mapa
+        if mapa.get("etiquetas"):
+            extra = (
+                "En el dibujo del cuerpo, el dolor o la limitación queda marcado en rojo: "
+                + ", ".join(mapa["etiquetas"])
+                + "."
+            )
+            texto = resultado.get("respuesta") or ""
+            if extra not in texto:
+                resultado["respuesta"] = f"{texto}\n\n{extra}".strip()
+        return resultado
+
+    async def _datos_cuerpo(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **extra: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        args = extra.get("args") if isinstance(extra.get("args"), dict) else {}
+        limitacion = str(args.get("limitacion") or mensaje or "")
+        mapa = mapa_corporal(mensaje, limitacion)
+        if mapa.get("etiquetas"):
+            texto = (
+                "Marqué en rojo las zonas del cuerpo que coinciden con lo que reportas: "
+                + ", ".join(mapa["etiquetas"])
+                + ". Para y reduce carga en esas articulaciones."
+            )
+        else:
+            texto = (
+                "Te dejo el dibujo del cuerpo. Describe la zona (por ejemplo "
+                "«rodilla izquierda») o usa el campo limitación para pintarla en rojo."
+            )
+        return texto, {"cuerpo": mapa}
+
     # -------------------------------------------------------------- enriquecido
 
     async def _enriquecer(
@@ -1234,6 +1294,7 @@ class ChatbotAgent:
             "propuesta_rutina": self._datos_propuesta_rutina,
             "exportar_pdf": self._datos_exportar_pdf,
             "usuarios": self._datos_usuarios,
+            "cuerpo": self._datos_cuerpo,
         }
         manejador = acciones.get(accion)
         if not manejador:
@@ -1254,6 +1315,7 @@ class ChatbotAgent:
                 "propuesta_rutina",
                 "exportar_pdf",
                 "usuarios",
+                "cuerpo",
             ):
                 return await manejador(
                     usuario_id, discapacidad, authorization, mensaje, **extra

@@ -22,6 +22,7 @@ _TOOL_A_ACCION: dict[str, str] = {
     "recomendar_evento_nuevo": "propuesta_evento",
     "recomendar_deporte_nuevo": "propuesta_deporte",
     "recomendar_rutina_nueva": "propuesta_rutina",
+    "dibujar_cuerpo": "cuerpo",
 }
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -222,6 +223,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "dibujar_cuerpo",
+            "description": (
+                "Genera un dibujo del cuerpo humano y marca en rojo las zonas "
+                "donde el usuario reporta dolor o una limitación. Úsala cuando "
+                "hablen de dolor, lesión, molestia o pidan ver el cuerpo."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limitacion": {
+                        "type": "string",
+                        "description": (
+                            "Texto de la limitación o zona de dolor: "
+                            "por ejemplo 'dolor en rodilla izquierda'."
+                        ),
+                    }
+                },
+            },
+        },
+    },
 ]
 
 
@@ -239,4 +263,8 @@ def mensaje_tool_para_objetivo(nombre: str, argumentos: dict[str, Any], fallback
         objetivo = (argumentos or {}).get("objetivo")
         if objetivo and str(objetivo).strip():
             return str(objetivo).strip()
+    if nombre == "dibujar_cuerpo":
+        lim = (argumentos or {}).get("limitacion")
+        if lim and str(lim).strip():
+            return str(lim).strip()
     return fallback

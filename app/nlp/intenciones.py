@@ -258,7 +258,8 @@ _DEFINICIONES = [
         descripcion="Dolor, lesiones y seguridad",
         frases=(
             "me duele", "tengo dolor", "me lesione", "es seguro", "puedo lastimarme",
-            "que hago si me duele",
+            "que hago si me duele", "dibuja el cuerpo", "mapa del cuerpo",
+            "marca el dolor en el cuerpo",
         ),
         palabras=("dolor", "duele", "lesion", "lesiones", "molestia", "seguridad", "riesgo", "fatiga"),
         prioridad=1.4,

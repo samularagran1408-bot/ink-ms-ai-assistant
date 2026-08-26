@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from app.motor.cuerpo import mapa_corporal
 from app.nlp.discapacidad import canonizar, descripcion
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
@@ -22,6 +23,7 @@ class RiesgoAgent:
         dias_sin_descanso: int = 0,
         authorization: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
+        limitacion: Optional[str] = None,
     ) -> dict[str, Any]:
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         if not perfil:
@@ -51,6 +53,9 @@ class RiesgoAgent:
         if dolor_reportado:
             score += 35
             factores.append("El usuario reportó dolor o molestia reciente.")
+        if (limitacion or "").strip():
+            score += 10
+            factores.append(f"Limitación reportada: {limitacion.strip()}.")
         if rpe_reciente is not None:
             if rpe_reciente >= 8:
                 score += 25
@@ -100,6 +105,10 @@ class RiesgoAgent:
             "eventos_inscritos": len(inscritos),
             "perfil_fuente": "users/perfil" if perfil.get("id") else "incompleto",
             "rf": "RF43",
+            "limitacion": (limitacion or "").strip() or None,
+            "cuerpo": mapa_corporal("", limitacion)
+            if (dolor_reportado or (limitacion or "").strip())
+            else None,
         }
 
     def _recomendaciones(self, nivel: str, discapacidad: str) -> list[str]:

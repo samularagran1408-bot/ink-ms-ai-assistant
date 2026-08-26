@@ -18,6 +18,11 @@ class RiesgoRequest(BaseModel):
     rpe_reciente: Optional[float] = Field(default=None, ge=0, le=10)
     dolor_reportado: bool = False
     dias_sin_descanso: int = Field(default=0, ge=0, le=30)
+    limitacion: Optional[str] = Field(
+        default=None,
+        description="Zona o tipo de dolor/limitación a marcar en el dibujo del cuerpo",
+        max_length=400,
+    )
 
 
 async def _evaluar(
@@ -26,6 +31,7 @@ async def _evaluar(
     dolor_reportado: bool,
     dias_sin_descanso: int,
     authorization: Optional[str],
+    limitacion: Optional[str] = None,
 ):
     ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
     result = await agent.evaluar(
@@ -35,6 +41,7 @@ async def _evaluar(
         dias_sin_descanso=dias_sin_descanso,
         authorization=ctx.authorization,
         perfil=ctx.perfil,
+        limitacion=limitacion,
     )
     if isinstance(result, dict):
         result["rf"] = "RF43"
@@ -54,6 +61,7 @@ async def evaluar_riesgo(
             request.dolor_reportado,
             request.dias_sin_descanso,
             authorization,
+            request.limitacion,
         )
     except HTTPException:
         raise
@@ -75,6 +83,7 @@ async def riesgo_lesiones(
             body.dolor_reportado,
             body.dias_sin_descanso,
             authorization,
+            body.limitacion,
         )
     except HTTPException:
         raise
