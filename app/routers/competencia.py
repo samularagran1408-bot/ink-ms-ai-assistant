@@ -4,6 +4,7 @@ from fastapi import APIRouter, Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.agents.competencia_agent import CompetenciaAgent
+from app.agents.competencia_progreso import CompetenciaAccionError
 from app.deps.contexto import resolver_contexto
 
 router = APIRouter()
@@ -15,6 +16,19 @@ class ModoCompetenciaRequest(BaseModel):
     evento_id: Optional[str] = None
     objetivo: Optional[str] = None
     semanas: int = Field(default=3, ge=1, le=8)
+
+
+class ChecklistRequest(BaseModel):
+    item_id: str = Field(..., min_length=1)
+    hecho: bool = True
+
+
+class SesionRequest(BaseModel):
+    routine_id: str = Field(..., min_length=1)
+
+
+def _accion_http(exc: CompetenciaAccionError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=exc.detail)
 
 
 @router.get("/analizar")
@@ -76,6 +90,55 @@ async def modo_competencia(
             semanas=body.semanas,
             authorization=ctx.authorization,
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/checklist")
+@router.post("/checklist/{usuario_id}")
+@router.patch("/checklist")
+@router.patch("/checklist/{usuario_id}")
+async def marcar_checklist(
+    usuario_id: Optional[str] = None,
+    body: ChecklistRequest = Body(...),
+    authorization: Optional[str] = Header(None),
+):
+    """Marca un punto de la lista del plan de competencia."""
+    try:
+        ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
+        return await agent.marcar_checklist(
+            ctx.id,
+            body.item_id,
+            body.hecho,
+            authorization=ctx.authorization,
+        )
+    except CompetenciaAccionError as exc:
+        raise _accion_http(exc) from exc
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sesion")
+@router.post("/sesion/{usuario_id}")
+async def registrar_sesion(
+    usuario_id: Optional[str] = None,
+    body: SesionRequest = Body(...),
+    authorization: Optional[str] = Header(None),
+):
+    """Registra una sesión de rutina inscrita para subir el % del plan."""
+    try:
+        ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
+        return await agent.registrar_sesion(
+            ctx.id,
+            body.routine_id,
+            authorization=ctx.authorization,
+        )
+    except CompetenciaAccionError as exc:
+        raise _accion_http(exc) from exc
     except HTTPException:
         raise
     except Exception as e:

@@ -1,7 +1,16 @@
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Optional
+from uuid import uuid4
 
+from app.agents.competencia_progreso import (
+    CompetenciaAccionError,
+    fases_con_sesiones,
+    normalizar_checklist,
+    progreso_plan_desde_doc,
+    rutinas_inscritas_vista,
+    sesiones_hechas_doc,
+)
 from app.database.mongodb import get_db
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.texto import normalizar
@@ -30,30 +39,6 @@ def progreso_desde_inscripciones(inscritos: list, rutinas: list | None = None) -
         "inscripciones": len(inscritos),
         "rutinas": len(rutinas or []),
         "lista_espera": en_espera,
-    }
-
-
-def progreso_plan_desde_doc(doc: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Semana actual y % del plan según la fecha de activación del modo."""
-    if not doc or not doc.get("activo"):
-        return {"semanas": 0, "semana_actual": 0, "plan_pct": 0, "activado_en": None}
-    semanas = max(1, min(int(doc.get("semanas") or 3), 8))
-    raw = doc.get("activado_en") or doc.get("actualizado")
-    semana_actual = 1
-    if raw:
-        try:
-            start = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=timezone.utc)
-            dias = max(0, (datetime.now(timezone.utc) - start).days)
-            semana_actual = min(semanas, dias // 7 + 1)
-        except (TypeError, ValueError):
-            semana_actual = 1
-    return {
-        "semanas": semanas,
-        "semana_actual": semana_actual,
-        "plan_pct": round((semana_actual * 100) / semanas),
-        "activado_en": raw,
     }
 
 
@@ -506,6 +491,7 @@ SOLO JSON:
                 "eventsCreated": events_created_perfil,
             },
             "progreso_panel": progreso_panel,
+            "rutinas_usuario": rutinas or [],
         }
         payload["vista"] = self._vista_analisis(payload)
         return payload
@@ -570,6 +556,9 @@ SOLO JSON:
                     analisis_base={},
                     recomendaciones=retorno,
                     progreso_panel=analisis.get("progreso_panel") or {},
+                    rutinas_inscritas=rutinas_inscritas_vista(
+                        analisis.get("rutinas_usuario") or []
+                    ),
                 ),
             }
 
@@ -605,6 +594,7 @@ Sólo texto plano, sin JSON.
             "activado_en": ahora,
             "actualizado": ahora,
             "progreso_panel": analisis.get("progreso_panel") or {},
+            "sesiones_hechas": [],
         }
         await self._guardar_modo(usuario_id, estado)
 
@@ -616,20 +606,28 @@ Sólo texto plano, sin JSON.
         nota = nota_llm or plan.get("nota_local")
         progreso_panel = analisis.get("progreso_panel") or {}
         plan_prog = progreso_plan_desde_doc(estado)
+        inscritos_rutina = rutinas_inscritas_vista(analisis.get("rutinas_usuario") or [])
         return {
             "activo": True,
             "objetivo": objetivo_txt,
             "semanas": semanas,
             "semana_actual": plan_prog.get("semana_actual"),
             "plan_pct": plan_prog.get("plan_pct"),
+            "checklist_pct": plan_prog.get("checklist_pct"),
+            "sesiones_pct": plan_prog.get("sesiones_pct"),
+            "checklist_hechos": plan_prog.get("checklist_hechos"),
+            "checklist_total": plan_prog.get("checklist_total"),
+            "sesiones_hechas": plan_prog.get("sesiones_hechas"),
+            "sesiones_objetivo": plan_prog.get("sesiones_objetivo"),
             "evento_objetivo": proximo,
             "plan": plan,
-            "checklist": plan.get("checklist") or [],
+            "checklist": plan_prog.get("checklist") or [],
             "riesgos": plan.get("riesgos") or [],
             "nota": nota,
             "analisis_base": analisis_base,
             "usuario": usuario,
             "progreso_panel": progreso_panel,
+            "rutinas_inscritas": inscritos_rutina,
             "rf": "RF53",
             "vista": self._vista_modo(
                 activo=True,
@@ -641,6 +639,7 @@ Sólo texto plano, sin JSON.
                 analisis_base=analisis_base,
                 progreso_panel=progreso_panel,
                 progreso_plan=plan_prog,
+                rutinas_inscritas=inscritos_rutina,
             ),
         }
 
@@ -745,10 +744,12 @@ Sólo texto plano, sin JSON.
         recomendaciones: Optional[list[str]] = None,
         progreso_panel: Optional[dict[str, Any]] = None,
         progreso_plan: Optional[dict[str, Any]] = None,
+        rutinas_inscritas: Optional[list[dict[str, str]]] = None,
     ) -> dict[str, Any]:
         """Plan de competencia listo para pintar, sin serializar JSON al usuario."""
         panel = progreso_panel or {}
         plan_prog = progreso_plan or {}
+        inscritos = rutinas_inscritas or []
         if not activo:
             return {
                 "tipo": "modo",
@@ -769,26 +770,21 @@ Sólo texto plano, sin JSON.
                 "progreso_panel": panel,
                 "semana_actual": 0,
                 "plan_pct": 0,
+                "checklist_pct": 0,
+                "sesiones_pct": 0,
+                "rutinas_inscritas": inscritos,
             }
 
         evento_item = self._item_evento(evento)
-        fases = []
-        for fase in (plan or {}).get("fases") or []:
-            if not isinstance(fase, dict):
-                continue
-            fases.append(
-                {
-                    "semana": fase.get("semana"),
-                    "foco": fase.get("foco"),
-                    "intensidad": fase.get("intensidad"),
-                    "sesiones": fase.get("sesiones_sugeridas"),
-                    "nota": fase.get("nota"),
-                }
-            )
-        checklist = (plan or {}).get("checklist") or []
+        semana_actual = int(plan_prog.get("semana_actual") or 1)
+        plan_pct = int(plan_prog["plan_pct"]) if "plan_pct" in plan_prog else 0
+        checklist = plan_prog.get("checklist") or normalizar_checklist(plan)
+        fases = fases_con_sesiones(plan, int(plan_prog.get("sesiones_hechas") or 0), semana_actual)
         riesgos = (plan or {}).get("riesgos") or []
-        semana_actual = plan_prog.get("semana_actual") or 1
-        plan_pct = plan_prog.get("plan_pct") or round((1 * 100) / max(semanas, 1))
+        check_hechos = int(plan_prog.get("checklist_hechos") or 0)
+        check_total = int(plan_prog.get("checklist_total") or len(checklist))
+        ses_hechas = int(plan_prog.get("sesiones_hechas") or 0)
+        ses_obj = int(plan_prog.get("sesiones_objetivo") or 0)
         kpis = [
             {
                 "clave": "asistencia",
@@ -803,16 +799,16 @@ Sólo texto plano, sin JSON.
                 "label": f"Plan (sem. {semana_actual}/{semanas})",
             },
             {
-                "clave": "rutinas",
-                "icono": "heart",
-                "valor": panel.get("rutinas") or 0,
-                "label": "Rutinas del panel",
-            },
-            {
                 "clave": "checklist",
                 "icono": "clipboard-document-list",
-                "valor": len(checklist),
-                "label": "Puntos del plan",
+                "valor": f"{check_hechos}/{check_total}",
+                "label": "Lista del plan",
+            },
+            {
+                "clave": "sesiones",
+                "icono": "heart",
+                "valor": f"{ses_hechas}/{ses_obj}",
+                "label": "Sesiones de rutina",
             },
         ]
         return {
@@ -823,6 +819,12 @@ Sólo texto plano, sin JSON.
             "semanas": semanas,
             "semana_actual": semana_actual,
             "plan_pct": plan_pct,
+            "checklist_pct": int(plan_prog.get("checklist_pct") or 0),
+            "sesiones_pct": int(plan_prog.get("sesiones_pct") or 0),
+            "checklist_hechos": check_hechos,
+            "checklist_total": check_total,
+            "sesiones_hechas": ses_hechas,
+            "sesiones_objetivo": ses_obj,
             "nota": nota,
             "evento_objetivo": evento_item,
             "progreso_panel": panel,
@@ -830,6 +832,7 @@ Sólo texto plano, sin JSON.
             "fases": fases,
             "checklist": checklist,
             "riesgos": riesgos,
+            "rutinas_inscritas": inscritos,
             "ventajas": (analisis_base or {}).get("ventajas") or [],
             "desventajas": (analisis_base or {}).get("desventajas") or [],
             "recomendaciones": recomendaciones
@@ -865,22 +868,51 @@ Sólo texto plano, sin JSON.
             })
 
         checklist = [
-            "Confirma inscripción y logística del evento objetivo.",
-            "Registra RPE tras cada sesión de preparación.",
-            "Revisa adaptaciones del deporte con tu entrenador.",
-            "Duerme 7–9 h y marca al menos un día de descanso semanal.",
+            {
+                "id": "c_logistica",
+                "texto": "Confirma inscripción y logística del evento objetivo.",
+                "hecho": False,
+            },
+            {
+                "id": "c_rpe",
+                "texto": "Registra RPE tras cada sesión de preparación.",
+                "hecho": False,
+            },
+            {
+                "id": "c_adaptaciones",
+                "texto": "Revisa adaptaciones del deporte con tu entrenador.",
+                "hecho": False,
+            },
+            {
+                "id": "c_descanso",
+                "texto": "Duerme 7–9 h y marca al menos un día de descanso semanal.",
+                "hecho": False,
+            },
         ]
         if evento:
             checklist.insert(
                 0,
-                f"Meta: {evento.get('nombre')} el {evento.get('fecha')} ({evento.get('deporte')}).",
+                {
+                    "id": "c_meta",
+                    "texto": (
+                        f"Meta: {evento.get('nombre')} el {evento.get('fecha')} "
+                        f"({evento.get('deporte')})."
+                    ),
+                    "hecho": False,
+                },
             )
         riesgos = [
             "Sobreentrenamiento por subir volumen demasiado rápido.",
             "Ignorar dolor articular o fatiga acumulada (RPE ≥ 8).",
         ]
         if recomendaciones:
-            checklist.append(recomendaciones[0])
+            checklist.append(
+                {
+                    "id": "c_reco",
+                    "texto": str(recomendaciones[0]),
+                    "hecho": False,
+                }
+            )
 
         return {
             "objetivo": objetivo,
@@ -926,7 +958,8 @@ Sólo texto plano, sin JSON.
     ) -> dict[str, Any]:
         """Estado persistido del modo competencia + progreso del panel principal."""
         doc = await self._leer_modo(usuario_id)
-        progreso = await self._calcular_progreso_panel(usuario_id, authorization)
+        progreso, rutinas = await self._panel_y_rutinas(usuario_id, authorization)
+        inscritos_rutina = rutinas_inscritas_vista(rutinas)
         activo = bool(doc.get("activo"))
         plan = doc.get("plan") if activo else {}
         plan_prog = progreso_plan_desde_doc(doc) if activo else {}
@@ -939,9 +972,17 @@ Sólo texto plano, sin JSON.
             "semanas": semanas if activo else None,
             "semana_actual": plan_prog.get("semana_actual") if activo else 0,
             "plan_pct": plan_prog.get("plan_pct") if activo else 0,
+            "checklist_pct": plan_prog.get("checklist_pct") if activo else 0,
+            "sesiones_pct": plan_prog.get("sesiones_pct") if activo else 0,
+            "checklist_hechos": plan_prog.get("checklist_hechos") if activo else 0,
+            "checklist_total": plan_prog.get("checklist_total") if activo else 0,
+            "sesiones_hechas": plan_prog.get("sesiones_hechas") if activo else 0,
+            "sesiones_objetivo": plan_prog.get("sesiones_objetivo") if activo else 0,
+            "checklist": plan_prog.get("checklist") if activo else [],
             "evento_objetivo": evento,
             "plan": plan or {},
             "progreso_panel": progreso,
+            "rutinas_inscritas": inscritos_rutina,
             "activado_en": doc.get("activado_en") if activo else None,
             "rf": "RF53",
             "vista": self._vista_modo(
@@ -954,15 +995,100 @@ Sólo texto plano, sin JSON.
                 analisis_base={},
                 progreso_panel=progreso,
                 progreso_plan=plan_prog,
+                rutinas_inscritas=inscritos_rutina,
             ),
         }
 
-    async def _calcular_progreso_panel(
-        self, usuario_id: str, authorization: Optional[str] = None
+    async def marcar_checklist(
+        self,
+        usuario_id: str,
+        item_id: str,
+        hecho: bool,
+        authorization: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Marca o desmarca un ítem de la lista del plan activo."""
+        doc = await self._leer_modo(usuario_id)
+        if not doc.get("activo"):
+            raise CompetenciaAccionError(
+                409, "Activa el modo competencia para marcar la lista del plan."
+            )
+        plan = doc.get("plan") if isinstance(doc.get("plan"), dict) else {}
+        items = normalizar_checklist(plan)
+        clave = str(item_id or "").strip()
+        encontrado = False
+        for item in items:
+            if item.get("id") == clave:
+                item["hecho"] = bool(hecho)
+                encontrado = True
+                break
+        if not encontrado:
+            raise CompetenciaAccionError(404, "No encontré ese punto de la lista.")
+        plan["checklist"] = items
+        doc["plan"] = plan
+        doc["actualizado"] = datetime.now(timezone.utc).isoformat()
+        await self._guardar_modo(usuario_id, doc)
+        return await self.obtener_modo(usuario_id, authorization)
+
+    async def registrar_sesion(
+        self,
+        usuario_id: str,
+        routine_id: str,
+        authorization: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Registra una sesión de una rutina inscrita para avanzar el plan."""
+        doc = await self._leer_modo(usuario_id)
+        if not doc.get("activo"):
+            raise CompetenciaAccionError(
+                409, "Activa el modo competencia para registrar sesiones del plan."
+            )
+        rid = str(routine_id or "").strip()
+        if not rid:
+            raise CompetenciaAccionError(400, "Indica la rutina de la sesión.")
+
+        _, rutinas = await self._panel_y_rutinas(usuario_id, authorization)
+        match = next(
+            (
+                r
+                for r in rutinas
+                if str(r.get("routineId") or r.get("id") or "") == rid
+                and str(r.get("status") or "active").lower() != "cancelled"
+            ),
+            None,
+        )
+        if match is None:
+            raise CompetenciaAccionError(
+                409, "Únete a esa rutina en el panel para poder registrar la sesión."
+            )
+
+        sesiones = sesiones_hechas_doc(doc)
+        hoy = datetime.now(timezone.utc).date().isoformat()
+        if any(
+            str(s.get("routine_id") or "") == rid and str(s.get("fecha") or "")[:10] == hoy
+            for s in sesiones
+        ):
+            raise CompetenciaAccionError(
+                409, "Ya registraste una sesión de esta rutina hoy."
+            )
+
+        sesiones.append(
+            {
+                "id": str(uuid4()),
+                "routine_id": rid,
+                "routine_name": match.get("routineName") or match.get("name") or "Rutina",
+                "fecha": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        doc["sesiones_hechas"] = sesiones
+        doc["actualizado"] = datetime.now(timezone.utc).isoformat()
+        await self._guardar_modo(usuario_id, doc)
+        return await self.obtener_modo(usuario_id, authorization)
+
+    async def _panel_y_rutinas(
+        self, usuario_id: str, authorization: Optional[str] = None
+    ) -> tuple[dict[str, Any], list]:
         inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
         rutinas = await self.sports_service.get_rutinas_usuario(usuario_id, authorization)
-        return progreso_desde_inscripciones(inscritos, rutinas)
+        return progreso_desde_inscripciones(inscritos, rutinas), rutinas or []
 
     async def _leer_modo(self, usuario_id: str) -> dict[str, Any]:
         db = get_db()
