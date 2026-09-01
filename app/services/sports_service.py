@@ -1,19 +1,26 @@
+"""Cliente de ink-ms-sports (eventos, deportes, discapacidades, rutinas e inscripciones)."""
+
 import httpx
 from typing import Any, Optional
 from app.config import settings
 
 
 class SportsService:
+    """Consulta el catálogo e inscripciones de ink-ms-sports vía HTTP."""
+
     def __init__(self):
+        """Guarda la URL base de ink-ms-sports desde la configuración."""
         self.base_url = settings.SPORTS_SERVICE_URL.rstrip("/")
 
     def _headers(self, authorization: Optional[str] = None) -> dict[str, str]:
+        """Normaliza el JWT a cabecera ``Authorization: Bearer …``; vacío si no hay token."""
         if not authorization:
             return {}
         token = authorization if authorization.startswith("Bearer ") else f"Bearer {authorization}"
         return {"Authorization": token}
 
     async def _get_json(self, path: str, authorization: Optional[str] = None, default: Any = None) -> Any:
+        """GET a ``path`` relativo de ink-ms-sports. Devuelve JSON 200 o ``default`` (lista vacía)."""
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(
@@ -43,7 +50,12 @@ class SportsService:
         return recomendables if recomendables else eventos
 
     async def get_eventos_usuario(self, usuario_id: str, authorization: Optional[str] = None) -> list[dict]:
-        """Inscripciones del usuario enriquecidas con datos del evento."""
+        """Inscripciones del usuario enriquecidas con datos del evento.
+
+        Llama ``GET /api/registrations/user/{usuario_id}`` y cruza con
+        ``GET /api/events`` para añadir nombre, deporte, fecha y ubicación.
+        El llamador recibe la lista de inscripciones ya combinadas.
+        """
         registros = await self._get_json(
             f"/api/registrations/user/{usuario_id}",
             authorization,
@@ -73,14 +85,17 @@ class SportsService:
         return enriquecidos
 
     async def get_deportes_activos(self, authorization: Optional[str] = None) -> list[dict]:
+        """Catálogo de deportes activos: ``GET /api/sports/active``. Lista o ``[]``."""
         data = await self._get_json("/api/sports/active", authorization, default=[])
         return data if isinstance(data, list) else []
 
     async def get_discapacidades_activas(self, authorization: Optional[str] = None) -> list[dict]:
+        """Tipos de discapacidad activos: ``GET /api/disabilities/active``. Lista o ``[]``."""
         data = await self._get_json("/api/disabilities/active", authorization, default=[])
         return data if isinstance(data, list) else []
 
     async def get_adaptaciones_deporte(self, sport_id: int | str, authorization: Optional[str] = None) -> list[dict]:
+        """Adaptaciones de un deporte: ``GET /api/sport-disabilities/sport/{sport_id}``."""
         data = await self._get_json(
             f"/api/sport-disabilities/sport/{sport_id}",
             authorization,
@@ -89,11 +104,16 @@ class SportsService:
         return data if isinstance(data, list) else []
 
     async def get_rutinas_publicadas(self, authorization: Optional[str] = None) -> list[dict]:
+        """Rutinas publicadas en la plataforma: ``GET /api/routines``. Lista o ``[]``."""
         data = await self._get_json("/api/routines", authorization, default=[])
         return data if isinstance(data, list) else []
 
     async def get_rutinas_usuario(self, usuario_id: str, authorization: Optional[str] = None) -> list[dict]:
-        """Inscripciones del usuario a rutinas de entrenador."""
+        """Inscripciones del usuario a rutinas de entrenador.
+
+        Llama ``GET /api/routine-registrations/user/{usuario_id}`` y las enriquece
+        con ``GET /api/routines`` (nombre, deporte, nivel, duración).
+        """
         registros = await self._get_json(
             f"/api/routine-registrations/user/{usuario_id}",
             authorization,

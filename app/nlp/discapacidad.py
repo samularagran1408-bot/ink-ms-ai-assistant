@@ -50,6 +50,7 @@ def coincide(discapacidad_usuario: str | None, *candidatos: str | None) -> bool:
 
 
 def descripcion(clave: str) -> str:
+    """Etiqueta legible de la clave canónica (p. ej. motriz → discapacidad física)."""
     etiquetas = {
         "visual": "discapacidad visual",
         "auditiva": "discapacidad auditiva",

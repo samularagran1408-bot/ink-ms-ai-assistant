@@ -1,3 +1,5 @@
+"""RF43 — predicción heurística de riesgo de lesión (sin valor diagnóstico)."""
+
 from typing import Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException
@@ -11,6 +13,8 @@ agent = RiesgoAgent()
 
 
 class RiesgoRequest(BaseModel):
+    """Indicadores de carga (RPE, dolor, descanso) para estimar el riesgo de lesión."""
+
     usuario_id: Optional[str] = Field(
         default=None,
         description="Opcional. Con token se usa el perfil autenticado. Sólo ADMIN/ENTRENADOR pueden indicar otro id.",
@@ -33,6 +37,7 @@ async def _evaluar(
     authorization: Optional[str],
     limitacion: Optional[str] = None,
 ):
+    """Resuelve el perfil autenticado y delega la evaluación al RiesgoAgent (RF43)."""
     ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
     result = await agent.evaluar(
         usuario_id=ctx.id,
@@ -53,7 +58,10 @@ async def evaluar_riesgo(
     request: RiesgoRequest,
     authorization: Optional[str] = Header(None),
 ):
-    """RF43 — predicción heurística de riesgo de lesión según perfil del token."""
+    """RF43 — estima el riesgo de lesión (score 0–100) según perfil, RPE y dolor.
+
+    Si hay dolor o `limitacion`, incluye el mapa corporal con las zonas marcadas.
+    """
     try:
         return await _evaluar(
             request.usuario_id,
@@ -75,7 +83,11 @@ async def riesgo_lesiones(
     body: RiesgoRequest = Body(default_factory=RiesgoRequest),
     authorization: Optional[str] = Header(None),
 ):
-    """RF43 — alias canónico POST /api/ai/riesgo/lesiones/{userId}."""
+    """RF43 — alias canónico POST /api/ai/riesgo/lesiones/{userId}.
+
+    El `usuario_id` de la ruta identifica al atleta a evaluar (ADMIN/ENTRENADOR
+    pueden consultar a otro; el resto solo a sí mismos vía el contexto).
+    """
     try:
         return await _evaluar(
             usuario_id,

@@ -1,3 +1,5 @@
+"""Cliente de ink-ms-users (perfiles, roles, quiz de aptitud y administración)."""
+
 from typing import Any, Optional
 
 import httpx
@@ -6,17 +8,25 @@ from app.config import settings
 
 
 class UserService:
+    """Consulta y actualiza usuarios en ink-ms-users vía HTTP."""
+
     def __init__(self):
+        """Guarda la URL base de ink-ms-users desde la configuración."""
         self.base_url = settings.USERS_SERVICE_URL.rstrip("/")
 
     def _headers(self, authorization: Optional[str] = None) -> dict[str, str]:
+        """Normaliza el JWT a cabecera ``Authorization: Bearer …``; vacío si no hay token."""
         if not authorization:
             return {}
         token = authorization if authorization.startswith("Bearer ") else f"Bearer {authorization}"
         return {"Authorization": token}
 
     async def get_my_profile(self, authorization: Optional[str] = None) -> dict[str, Any]:
-        """Perfil del usuario del token: GET /api/users/perfil (fuente de verdad)."""
+        """Perfil del usuario autenticado.
+
+        Llama ``GET /api/users/perfil`` con el JWT. Devuelve el dict del perfil
+        (id, email, etc.) o ``{}`` si falta token o el microservicio falla.
+        """
         if not authorization:
             return {}
         try:
@@ -36,7 +46,12 @@ class UserService:
     async def get_profile_by_email(
         self, email: str, authorization: Optional[str] = None
     ) -> dict[str, Any]:
-        """Intenta resolver perfil por email (roles internos + búsqueda)."""
+        """Resuelve el perfil si el email coincide con el usuario del token.
+
+        Combina ``GET /api/users/perfil`` con roles de
+        ``GET /api/internal/users/roles-by-email``. Si el email no es el de la
+        sesión, devuelve ``{}`` (no busca a terceros por correo).
+        """
         if not email:
             return {}
         roles = await self.get_roles_by_email(email)
@@ -50,6 +65,11 @@ class UserService:
         return {}
 
     async def get_roles_by_email(self, email: str) -> list[str]:
+        """Roles asociados a un correo.
+
+        Llama ``GET /api/internal/users/roles-by-email?email=…`` (sin JWT).
+        Devuelve la lista de roles o ``[]`` si el microservicio falla.
+        """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 respuesta = await client.get(
@@ -67,9 +87,11 @@ class UserService:
     async def get_user_profile(
         self, user_id: str, authorization: Optional[str] = None
     ) -> dict[str, Any]:
-        """
-        Obtiene el perfil desde ink-ms-users.
-        Prioriza /perfil si el id/email coincide con el token; si no, interno/público.
+        """Obtiene el perfil desde ink-ms-users.
+
+        Si ``user_id`` es ``me``/``yo`` o coincide con el token, usa
+        ``GET /api/users/perfil``. Si no, prueba ``GET /api/internal/users/{id}``
+        y ``GET /api/users/{id}``. Devuelve el dict del perfil o ``{}``.
         """
         if not user_id:
             return {}
@@ -113,10 +135,10 @@ class UserService:
     async def get_quiz_prep_status(
         self, role: str, user_id: str, authorization: Optional[str] = None
     ) -> dict[str, Any]:
-        """
-        /**
-         * Consulta el estado de prep/intentos del quiz en ink-ms-users.
-         */
+        """Estado de preparación e intentos del quiz de aptitud.
+
+        Llama ``GET /api/users/verify/quiz/prep/{role_path}/{user_id}``
+        (organizer o trainer). Devuelve el dict del microservicio o ``{}``.
         """
         role_path = "organizer" if str(role).upper() in ("ORGANIZADOR", "ORGANIZER") else "trainer"
         headers = self._headers(authorization)
@@ -135,21 +157,13 @@ class UserService:
     async def save_organizer_quiz_score(
         self, user_id: str, score: float, authorization: Optional[str] = None
     ) -> bool:
-        """
-        /**
-         * Registra el puntaje del quiz de organizador en ink-ms-users.
-         */
-        """
+        """Registra el puntaje del quiz de organizador (POST interno verify/quiz/organizer)."""
         return await self._save_quiz_score("organizer", user_id, score, authorization)
 
     async def save_trainer_quiz_score(
         self, user_id: str, score: float, authorization: Optional[str] = None
     ) -> bool:
-        """
-        /**
-         * Registra el puntaje del quiz de entrenador en ink-ms-users.
-         */
-        """
+        """Registra el puntaje del quiz de entrenador (POST interno verify/quiz/trainer)."""
         return await self._save_quiz_score("trainer", user_id, score, authorization)
 
     async def _save_quiz_score(
@@ -159,10 +173,10 @@ class UserService:
         score: float,
         authorization: Optional[str] = None,
     ) -> bool:
-        """
-        /**
-         * POST interno a /api/users/verify/quiz/{role}/{userId}?score=...
-         */
+        """Envía el puntaje del quiz a ink-ms-users.
+
+        Llama ``POST /api/users/verify/quiz/{role_path}/{user_id}?score=…``.
+        Devuelve True si el microservicio responde 2xx.
         """
         headers = self._headers(authorization)
         url = f"{self.base_url}/api/users/verify/quiz/{role_path}/{user_id}"
@@ -184,6 +198,11 @@ class UserService:
     async def list_users(
         self, authorization: Optional[str] = None, *, solo_activos: bool = False
     ) -> list[dict[str, Any]]:
+        """Lista usuarios para el panel admin.
+
+        Llama ``GET /api/admin/users`` o ``GET /api/admin/users/active`` si
+        ``solo_activos``. Requiere JWT. Devuelve la lista o ``[]``.
+        """
         if not authorization:
             return []
         path = "/api/admin/users/active" if solo_activos else "/api/admin/users"
@@ -203,6 +222,7 @@ class UserService:
     async def list_inactive_users(
         self, authorization: Optional[str] = None
     ) -> list[dict[str, Any]]:
+        """Usuarios inactivos: ``GET /api/admin/users/inactive``. Requiere JWT. Lista o ``[]``."""
         if not authorization:
             return []
         try:
@@ -224,6 +244,11 @@ class UserService:
         discapacidad: str = "",
         authorization: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        """Busca usuarios por nombre y/o discapacidad.
+
+        Llama ``GET /api/admin/users/search`` con ``name`` y/o ``disability``.
+        Sin filtros o sin JWT devuelve ``[]``.
+        """
         if not authorization:
             return []
         params: dict[str, str] = {}

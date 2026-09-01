@@ -101,11 +101,16 @@ _ETIQUETAS_FINALES: dict[str, str] = {
 
 
 def _texto_conjunto(mensaje: str, limitacion: Optional[str]) -> str:
+    """Une mensaje y limitación ya normalizados para buscar zonas corporales."""
     return normalizar(f"{mensaje or ''} {limitacion or ''}")
 
 
 def extraer_zonas(texto: str) -> list[str]:
-    """Devuelve ids de zona concretos (ya expandidos) ordenados."""
+    """Ids de zona ya expandidos a izquierda/derecha, en el orden de detección.
+
+    Una mención genérica («rodilla») se parte en `_izq` y `_der`; si el texto
+    ya nombra un lado concreto, no se duplica.
+    """
     limpio = normalizar(texto or "")
     if not limpio:
         return []
@@ -141,6 +146,7 @@ def extraer_zonas(texto: str) -> list[str]:
 
 
 def hay_dolor(texto: str) -> bool:
+    """Indica si el texto menciona dolor, lesión, molestia o limitación."""
     limpio = normalizar(texto or "")
     return any(p in limpio for p in _DOLOR)
 
@@ -150,6 +156,11 @@ def debe_dibujar(
     limitacion: Optional[str] = None,
     intencion: Optional[str] = None,
 ) -> bool:
+    """Decide si el chat debe adjuntar el mapa corporal.
+
+    Dibuja si hay `limitacion`, si la intención es lesiones/salud, o si el
+    texto nombra zonas o palabras de dolor.
+    """
     fuente = _texto_conjunto(mensaje, limitacion)
     if (limitacion or "").strip():
         return True
@@ -164,6 +175,7 @@ def mapa_corporal(
     mensaje: str = "",
     limitacion: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Construye el payload del dibujo: zonas en rojo, etiquetas, vista y nota."""
     fuente = _texto_conjunto(mensaje, limitacion)
     zonas = extraer_zonas(fuente)
     etiquetas = [_ETIQUETAS_FINALES.get(z, z) for z in zonas]

@@ -58,6 +58,7 @@ fallos: list[str] = []
 
 
 def comprobar(condicion: bool, mensaje: str) -> None:
+    """Registra OK o FALLA; las fallas se acumulan para el resumen final."""
     if condicion:
         print(f"    OK  {mensaje}")
     else:
@@ -66,10 +67,12 @@ def comprobar(condicion: bool, mensaje: str) -> None:
 
 
 def titulo(texto: str) -> None:
+    """Imprime un encabezado de sección en la consola."""
     print(f"\n{'=' * 78}\n{texto}\n{'=' * 78}")
 
 
 def probar_estado(cliente: httpx.Client) -> None:
+    """Verifica health, catálogo de ejercicios y que los microservicios respondan."""
     titulo("1. Estado del servicio")
     salud = cliente.get("/api/ai/health").json()
     print(json.dumps(salud, ensure_ascii=False, indent=2))
@@ -104,6 +107,7 @@ def probar_estado(cliente: httpx.Client) -> None:
 
 
 def probar_chat(cliente: httpx.Client) -> None:
+    """Envía el banco de preguntas y exige intenciones y respuestas distintas."""
     titulo("2. Chatbot: una respuesta distinta por intención")
     respuestas = []
     intenciones = []
@@ -159,6 +163,7 @@ def probar_chat(cliente: httpx.Client) -> None:
 
 
 def probar_preguntas_abiertas(cliente: httpx.Client) -> None:
+    """Preguntas fuera del guion: ninguna debe quedar en no_entendido."""
     titulo("2b. Chatbot: preguntas fuera del guion")
     sin_entender = []
     fuentes = []
@@ -188,6 +193,7 @@ def probar_preguntas_abiertas(cliente: httpx.Client) -> None:
 
 
 def probar_rutinas_por_discapacidad(cliente: httpx.Client, usuario: str) -> None:
+    """Cada discapacidad debe recibir ejercicios y recomendaciones distintas."""
     titulo("3b. Rutinas: cada discapacidad recibe una sesión distinta")
     firmas: dict[str, tuple] = {}
     recomendaciones: dict[str, str] = {}
@@ -240,6 +246,7 @@ def probar_rutinas_por_discapacidad(cliente: httpx.Client, usuario: str) -> None
 
 
 def probar_rutinas(cliente: httpx.Client, usuario: str) -> None:
+    """Comprueba variación entre llamadas, exclusión de pie en motriz y por objetivo."""
     titulo("3. Rutinas: distintas en cada llamada y adaptadas")
     firmas = set()
     for indice in range(4):
@@ -288,6 +295,7 @@ def probar_rutinas(cliente: httpx.Client, usuario: str) -> None:
 
 
 def probar_eventos(cliente: httpx.Client, usuario: str) -> None:
+    """Pide recomendaciones de eventos y verifica que haya cupos y adaptaciones."""
     titulo("4. Recomendación de eventos")
     datos = cliente.get(f"/api/ai/recomendacion/eventos/{usuario}?limite=3").json()
     print(f"  Perfil: {datos['usuario']}")
@@ -315,6 +323,7 @@ def probar_eventos(cliente: httpx.Client, usuario: str) -> None:
 
 
 def probar_competencia(cliente: httpx.Client, usuario: str) -> None:
+    """Analiza competencia con perfil real, deportes compatibles y ventajas."""
     titulo("5. Análisis de competencia")
     datos = cliente.get(f"/api/ai/competencia/analizar/{usuario}").json()
     print(f"  Usuario (desde ink-ms-users): {json.dumps(datos['usuario'], ensure_ascii=False)}")
@@ -368,6 +377,7 @@ def probar_quiz(
     cliente: httpx.Client, usuario: str, rol: str, ruta: str, umbral: float,
     mongo_uri: str = "",
 ) -> None:
+    """Genera, evalúa y reintenta un quiz; comprueba umbral y registro en Users."""
     titulo(f"6. Quiz de {rol}")
     primero = cliente.post(
         f"/api/ai/quiz/{ruta}/generar",
@@ -468,6 +478,7 @@ def _respuestas_correctas(quiz_id: str, uri_preferida: str = "") -> dict[str, st
 
 
 def main() -> int:
+    """Orquesta todas las pruebas e2e y devuelve 1 si alguna comprobación falló."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://localhost:3008")
     parser.add_argument("--usuario", default="e68b3227-a44d-472e-b5c5-2825fcfcc090")

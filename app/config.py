@@ -1,3 +1,5 @@
+"""Configuración del servicio leída desde variables de entorno."""
+
 import os
 
 from dotenv import load_dotenv
@@ -6,6 +8,11 @@ load_dotenv()
 
 
 def _bool(nombre: str, defecto: bool) -> bool:
+    """Interpreta una variable de entorno como booleano.
+
+    Acepta 1, true, yes, y, si, sí y on (sin distinguir mayúsculas).
+    Si falta o está vacía, devuelve `defecto`.
+    """
     valor = os.getenv(nombre)
     if valor is None or not valor.strip():
         return defecto
@@ -13,6 +20,7 @@ def _bool(nombre: str, defecto: bool) -> bool:
 
 
 def _int(nombre: str, defecto: int) -> int:
+    """Lee una variable de entorno como entero; si no es un número válido, usa `defecto`."""
     try:
         return int(os.getenv(nombre, "").strip() or defecto)
     except ValueError:
@@ -20,6 +28,7 @@ def _int(nombre: str, defecto: int) -> int:
 
 
 def _primero(*nombres: str, defecto: str = "") -> str:
+    """Devuelve el primer valor de entorno no vacío entre `nombres`, o `defecto`."""
     for nombre in nombres:
         valor = os.getenv(nombre)
         if valor and valor.strip():
@@ -28,6 +37,11 @@ def _primero(*nombres: str, defecto: str = "") -> str:
 
 
 class Settings:
+    """Ajustes de MongoDB, microservicios, LLM, historial de chat y retención.
+
+    Los valores por defecto sirven para desarrollo local; Docker o `.env`
+    los sobrescriben.
+    """
     # Defaults pensados para desarrollo local; Docker los sobrescribe
     MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
     MONGODB_DB = os.getenv("MONGODB_DB", "inclusport_training_ia")

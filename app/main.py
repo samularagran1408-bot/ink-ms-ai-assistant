@@ -1,3 +1,5 @@
+"""Punto de entrada FastAPI del asistente de IA de InkluSport."""
+
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Callable
@@ -43,6 +45,11 @@ from app.tools.registry import nombres_tools
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Ciclo de vida: conecta Mongo, siembra catálogos y lanza tareas; cierra al apagar.
+
+    Si Mongo no está disponible, el servicio sigue con los catálogos embebidos
+    en el código. Al salir cancela retención, precalentamiento y la conexión.
+    """
     try:
         uri = await connect_to_mongo()
         print(f"Conectado a MongoDB en {ocultar_credenciales(uri)}")
@@ -69,6 +76,11 @@ async def lifespan(app: FastAPI):
 
 
 async def _precalentar_llm() -> None:
+    """Carga el modelo local en memoria al arrancar para evitar el primer timeout.
+
+    Los proveedores en la nube no se precalientan (evitarían un 429 de cuota).
+    Si el modelo no responde, el asistente sigue con el motor local.
+    """
     llm = LLMService()
     if not llm.is_configured:
         return
@@ -87,9 +99,11 @@ class _StripTrailingSlash:
     """Evita 307 a http://ai-service:3008/... detrás del gateway (rompe Postman)."""
 
     def __init__(self, app: Callable):
+        """Guarda la aplicación ASGI a la que se reenvían las peticiones."""
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        """Elimina la barra final de rutas HTTP y delega en la app envolvida."""
         if scope["type"] == "http":
             path = scope.get("path") or ""
             if len(path) > 1 and path.endswith("/"):
@@ -97,6 +111,7 @@ class _StripTrailingSlash:
         await self.app(scope, receive, send)
 
     def __getattr__(self, name):
+        """Reenvía atributos desconocidos a la aplicación FastAPI interna."""
         return getattr(self.app, name)
 
 
@@ -141,6 +156,7 @@ _fastapi.include_router(quiz.router, prefix="/api/ai", tags=["Quices (alias)"])
 
 @_fastapi.get("/api/ai/health")
 async def health_check():
+    """Informe de salud: agentes, tools, requisitos RF, LLM, Mongo y motor local."""
     mongo = estado_mongo()
     return {
         "status": "healthy",
@@ -193,7 +209,10 @@ async def health_check():
 
 @_fastapi.get("/api/ai/diagnostico")
 async def diagnostico():
-    """Comprueba las dependencias del servicio para localizar qué falta levantar."""
+    """Comprueba si Mongo, LLM y el resto de microservicios responden.
+
+    Sirve para localizar qué dependencia falta levantar en local o en Docker.
+    """
     llm = LLMService()
     base_llm = llm.api_url.split("/v1/")[0] if "/v1/" in llm.api_url else llm.api_url
 
@@ -259,6 +278,7 @@ async def diagnostico():
 
 @_fastapi.get("/")
 async def root():
+    """Punto de entrada raíz con enlaces a documentación, salud y diagnóstico."""
     return {
         "service": "ink-ms-ai-assistant",
         "docs": "/docs",

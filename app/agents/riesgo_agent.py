@@ -11,7 +11,10 @@ from app.services.user_service import UserService
 
 
 class RiesgoAgent:
+    """Estima un score heurístico de riesgo de lesión (RF43). No es diagnóstico médico."""
+
     def __init__(self):
+        """Inicializa clientes de users y sports (carga competitiva)."""
         self.user_service = UserService()
         self.sports_service = SportsService()
 
@@ -25,6 +28,11 @@ class RiesgoAgent:
         perfil: Optional[dict[str, Any]] = None,
         limitacion: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Calcula score 0–100 y nivel (bajo/moderado/alto) a partir del perfil y la carga.
+
+        Suma puntos por tipo de discapacidad, dolor, RPE, días sin descanso y
+        eventos inscritos. Si hay dolor o `limitacion`, incluye el mapa corporal.
+        """
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         if not perfil:
             perfil = {}
@@ -112,6 +120,7 @@ class RiesgoAgent:
         }
 
     def _recomendaciones(self, nivel: str, discapacidad: str) -> list[str]:
+        """Pautas de seguridad genéricas más ajustes según nivel de riesgo y discapacidad."""
         base = [
             "Calienta 8–10 minutos antes de la parte principal.",
             "Detén el ejercicio si aparece dolor agudo (no fatiga muscular).",

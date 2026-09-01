@@ -18,7 +18,11 @@ async def dashboard_usuario(
     usuario_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
-    """RF47 — panel agregado para Usuario / Entrenador / Admin."""
+    """RF47 — panel agregado de métricas, riesgo, inscripciones y modo competencia.
+
+    Devuelve KPIs del atleta autenticado (o de otro usuario si ADMIN/ENTRENADOR
+    indica `usuario_id`). Incluye comparativa, snapshot de riesgo y alertas sugeridas.
+    """
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.construir(

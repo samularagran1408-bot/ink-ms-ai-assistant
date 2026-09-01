@@ -1,3 +1,5 @@
+"""RF41/RF42 — generación de rutinas adaptadas y adaptación de un ejercicio."""
+
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -15,6 +17,8 @@ agent = RutinasAgent()
 
 
 class RutinaRequest(BaseModel):
+    """Parámetros para generar una sesión adaptada (tipo, objetivo, nivel, duración)."""
+
     usuario_id: Optional[str] = Field(
         default=None,
         description="Opcional con token. Se usa el perfil autenticado.",
@@ -31,6 +35,8 @@ class RutinaRequest(BaseModel):
 
 
 class AdaptarRequest(BaseModel):
+    """Identifica un ejercicio del catálogo y la limitación/discapacidad a aplicar."""
+
     ejercicio_id: Optional[str] = None
     nombre_ejercicio: Optional[str] = None
     discapacidad: Optional[str] = None
@@ -42,6 +48,11 @@ class AdaptarRequest(BaseModel):
 async def generar_rutina_endpoint(
     request: RutinaRequest, authorization: Optional[str] = Header(None)
 ):
+    """RF41 — genera una rutina del catálogo adaptada al perfil y al objetivo pedido.
+
+    La discapacidad sale del token salvo override de ADMIN/ENTRENADOR. Sin `semilla`
+    cada petición varía los ejercicios; con semilla el resultado es reproducible.
+    """
     try:
         ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
         discapacidad = discapacidad_efectiva(
@@ -68,6 +79,11 @@ async def generar_rutina_endpoint(
 async def adaptar_ejercicio(
     request: AdaptarRequest, authorization: Optional[str] = Header(None)
 ):
+    """RF42 — adapta un ejercicio del catálogo a discapacidad y limitación reportada.
+
+    Si no encuentra el ejercicio, devuelve una alternativa corta del motor de rutinas
+    y el mapa corporal de la zona indicada.
+    """
     try:
         ctx = await resolver_contexto(authorization, require_auth=True)
         discapacidad = discapacidad_efectiva(

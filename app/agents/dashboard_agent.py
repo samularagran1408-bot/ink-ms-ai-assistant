@@ -17,7 +17,10 @@ COL_MODO_COMPETENCIA = "modo_competencia"
 
 
 class DashboardAgent:
+    """Agrega métricas, comparativa, riesgo e inscripciones para el panel AI (RF47)."""
+
     def __init__(self):
+        """Inicializa historial, riesgo y clientes de reports, sports y users."""
         self.historial = HistorialAgent()
         self.riesgo = RiesgoAgent()
         self.reports = ReportsService()
@@ -30,6 +33,10 @@ class DashboardAgent:
         authorization: Optional[str] = None,
         perfil: Optional[dict] = None,
     ) -> dict[str, Any]:
+        """Construye el dashboard del atleta: KPIs, comparativa, riesgo y modo competencia.
+
+        Devuelve tanto los bloques crudos como `vista` lista para pintar en la UI.
+        """
         perfil = perfil or await self.users.get_user_profile(usuario_id, authorization)
         metricas = await self.historial.metricas(usuario_id, authorization)
         comparativa = await self.historial.comparar(usuario_id, authorization)
@@ -109,6 +116,7 @@ class DashboardAgent:
         }
 
     async def _ultimo_rpe(self, usuario_id: str) -> Optional[float]:
+        """Devuelve el RPE más reciente del atleta, o None si no hay registros."""
         db = get_db()
         if db is None:
             return None
@@ -123,6 +131,7 @@ class DashboardAgent:
         return None
 
     async def _modo_competencia(self, usuario_id: str) -> dict[str, Any]:
+        """Lee el modo competencia persistido y adjunta % del plan. `{activo: False}` si no hay."""
         db = get_db()
         if db is None:
             return {"activo": False}
@@ -278,6 +287,7 @@ class DashboardAgent:
         }
 
     def resumen_texto(self, dashboard: dict[str, Any]) -> str:
+        """Convierte la `vista` del dashboard en un resumen en viñetas para el chat."""
         vista = dashboard.get("vista") or {}
         perfil = vista.get("perfil") or {}
         kpis = {k.get("clave"): k for k in (vista.get("kpis") or []) if isinstance(k, dict)}

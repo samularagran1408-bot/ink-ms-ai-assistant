@@ -1,3 +1,9 @@
+"""Agente de panorama competitivo y modo competencia (RF53).
+
+Filtra eventos al cruce deporte–discapacidad del perfil y gestiona el plan
+de preparación (checklist + sesiones de rutina).
+"""
+
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -22,7 +28,7 @@ COL_MODO_COMPETENCIA = "modo_competencia"
 
 
 def progreso_desde_inscripciones(inscritos: list, rutinas: list | None = None) -> dict[str, Any]:
-    """Mismas cifras que la tarjeta Progreso del panel principal del atleta."""
+    """Calcula asistencia, confirmados, lista de espera y rutinas, como la tarjeta Progreso del panel."""
     inscritos = inscritos or []
     en_espera = sum(1 for e in inscritos if e.get("waitlistPosition") is not None)
     confirmados = max(0, len(inscritos) - en_espera)
@@ -65,14 +71,17 @@ class CompetenciaAgent:
     """
 
     def __init__(self):
+        """Inicializa LLM, users y sports."""
         self.llm = LLMService()
         self.user_service = UserService()
         self.sports_service = SportsService()
 
     def _normalizar(self, texto: str) -> str:
+        """Normaliza texto para comparaciones (minúsculas, sin acentos superfluos)."""
         return normalizar(texto)
 
     def _discapacidad_coincide(self, discapacidad_usuario: str, *candidatos: str) -> bool:
+        """Indica si algún candidato describe la misma discapacidad canónica del usuario."""
         return coincide(discapacidad_usuario, *candidatos)
 
     async def _sport_ids_compatibles(
@@ -285,6 +294,12 @@ class CompetenciaAgent:
     async def analizar_rendimiento(
         self, usuario_id: str, authorization: str | None = None
     ):
+        """RF53 — analiza el panorama competitivo del atleta autenticado.
+
+        Cruza eventos con deportes que tienen adaptación a su discapacidad,
+        calcula estadísticas de cupos/asistencias y pide al LLM (o al heurístico)
+        ventajas, desventajas y recomendaciones concretas.
+        """
         user_data = await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad = user_data.get("disability") or "general"
         nombre = user_data.get("fullName") or "Usuario"
@@ -644,6 +659,7 @@ Sólo texto plano, sin JSON.
         }
 
     def _item_evento(self, evento: Optional[dict]) -> Optional[dict[str, Any]]:
+        """Normaliza un evento a {titulo, subtitulo, meta, id} para tarjetas de UI."""
         if not isinstance(evento, dict) or not evento:
             return None
         if evento.get("titulo") and ("meta" in evento or "subtitulo" in evento):
@@ -850,6 +866,7 @@ Sólo texto plano, sin JSON.
         objetivo: str,
         recomendaciones: list[str],
     ) -> dict[str, Any]:
+        """Arma fases semanales, checklist y riesgos del plan de preparación competitiva."""
         etiqueta = descripcion(canonizar(discapacidad))
         fases = []
         for i in range(1, semanas + 1):
@@ -926,6 +943,7 @@ Sólo texto plano, sin JSON.
         }
 
     def _kpis_panel(self, panel: dict[str, Any]) -> list[dict[str, Any]]:
+        """KPIs de asistencia, rutinas, confirmados y lista de espera para la vista inactiva."""
         return [
             {
                 "clave": "asistencia",
@@ -1086,11 +1104,13 @@ Sólo texto plano, sin JSON.
     async def _panel_y_rutinas(
         self, usuario_id: str, authorization: Optional[str] = None
     ) -> tuple[dict[str, Any], list]:
+        """Cifras de progreso del panel (asistencia/rutinas) y listado de rutinas inscritas."""
         inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
         rutinas = await self.sports_service.get_rutinas_usuario(usuario_id, authorization)
         return progreso_desde_inscripciones(inscritos, rutinas), rutinas or []
 
     async def _leer_modo(self, usuario_id: str) -> dict[str, Any]:
+        """Carga el documento de modo competencia; `{activo: False}` si no hay persistencia."""
         db = get_db()
         if db is None:
             return {"usuario_id": usuario_id, "activo": False}
@@ -1103,6 +1123,7 @@ Sólo texto plano, sin JSON.
             return {"usuario_id": usuario_id, "activo": False}
 
     async def _guardar_modo(self, usuario_id: str, doc: dict[str, Any]) -> None:
+        """Persiste (upsert) el estado del modo competencia en Mongo."""
         db = get_db()
         if db is None:
             return

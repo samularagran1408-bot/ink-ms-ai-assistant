@@ -26,6 +26,7 @@ CAMPOS_EJERCICIO = ("id", "nombre", "fase", "series", "nivel", "posicion")
 
 
 async def _leer(coleccion: str, filtro: dict, limite: int = 500) -> list[dict[str, Any]]:
+    """Lee documentos de Mongo sin `_id`; lista vacía si no hay BD o hay error."""
     db = get_db()
     if db is None:
         return []
@@ -38,6 +39,7 @@ async def _leer(coleccion: str, filtro: dict, limite: int = 500) -> list[dict[st
 
 
 async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
+    """Ejercicios activos de Mongo; si hay pocos válidos, usa el catálogo del código."""
     documentos = await _leer(COL_EJERCICIOS, {"activo": True})
     validos = [
         d for d in documentos
@@ -50,6 +52,7 @@ async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
 
 
 async def obtener_conocimiento(intencion: str) -> Optional[dict[str, Any]]:
+    """Ficha de conocimiento de una intención: primero Mongo, si no el dict embebido."""
     documentos = await _leer(COL_CONOCIMIENTO, {"intencion": intencion, "activo": True}, limite=1)
     if documentos:
         return documentos[0]
@@ -60,5 +63,6 @@ async def obtener_conocimiento(intencion: str) -> Optional[dict[str, Any]]:
 
 
 async def obtener_banco_quiz(rol: str) -> list[dict[str, Any]]:
+    """Preguntas del quiz para un rol (ORGANIZADOR/ENTRENADOR); si Mongo está vacío, el banco local."""
     documentos = await _leer(COL_QUIZ, {"rol": rol, "activo": True})
     return documentos or BANCOS.get(rol, [])

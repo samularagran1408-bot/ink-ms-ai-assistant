@@ -29,7 +29,10 @@ _VARIACION_POR_OBJETIVO = {
 
 
 class PlanesAgent:
+    """Arma planes multi-sesión con progresión semanal y los persiste (RF44)."""
+
     def __init__(self):
+        """Inicializa clientes de users y LLM (el LLM solo redacta el resumen)."""
         self.user_service = UserService()
         self.llm = LLMService()
 
@@ -45,6 +48,12 @@ class PlanesAgent:
         authorization: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        """Genera un plan de 1–8 semanas con sesiones variadas según el objetivo.
+
+        Sube el nivel a mitad de plan si hay margen, rota el enfoque diario afín
+        al objetivo y guarda el resultado en Mongo. El LLM, si está disponible,
+        redacta un resumen de dos frases; nunca elige los ejercicios.
+        """
         semanas = max(1, min(semanas, 8))
         sesiones_por_semana = max(2, min(sesiones_por_semana, 5))
 
@@ -119,12 +128,14 @@ class PlanesAgent:
         return plan
 
     async def obtener_plan(self, plan_id: str) -> Optional[dict[str, Any]]:
+        """Recupera un plan persistido por `plan_id`. None si no hay DB o no existe."""
         db = get_db()
         if db is None:
             return None
         return await db[COL_PLANES].find_one({"plan_id": plan_id}, {"_id": 0})
 
     async def _resumen(self, plan: dict, nombre: str) -> str:
+        """Redacta un resumen corto del plan; usa LLM si está disponible."""
         base = (
             f"{nombre}, tu plan de {plan['semanas']} semanas incluye "
             f"{plan['total_sesiones']} sesiones orientadas a {plan['objetivo']}."
@@ -140,6 +151,7 @@ class PlanesAgent:
         return await self.llm.texto(prompt, plan["usuario"]["disability"]) or base
 
     async def _guardar(self, plan: dict) -> None:
+        """Inserta el plan en Mongo; ignora el fallo si la base no está disponible."""
         db = get_db()
         if db is None:
             return

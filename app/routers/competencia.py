@@ -1,3 +1,5 @@
+"""RF53 — análisis competitivo, modo competencia, checklist y sesiones del plan."""
+
 from typing import Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException
@@ -12,6 +14,8 @@ agent = CompetenciaAgent()
 
 
 class ModoCompetenciaRequest(BaseModel):
+    """Cuerpo para activar o desactivar el modo competencia y fijar meta/semanas."""
+
     activar: bool = True
     evento_id: Optional[str] = None
     objetivo: Optional[str] = None
@@ -19,15 +23,20 @@ class ModoCompetenciaRequest(BaseModel):
 
 
 class ChecklistRequest(BaseModel):
+    """Identificador de un punto del plan y si queda marcado como hecho."""
+
     item_id: str = Field(..., min_length=1)
     hecho: bool = True
 
 
 class SesionRequest(BaseModel):
+    """Identificador de la rutina inscrita cuya sesión se registra hoy."""
+
     routine_id: str = Field(..., min_length=1)
 
 
 def _accion_http(exc: CompetenciaAccionError) -> HTTPException:
+    """Traduce un error de negocio del plan de competencia a HTTPException."""
     return HTTPException(status_code=exc.status, detail=exc.detail)
 
 
@@ -37,7 +46,11 @@ async def analizar_rendimiento(
     usuario_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
-    """RF53 — panorama competitivo del usuario autenticado."""
+    """RF53 — panorama competitivo: eventos compatibles, ventajas y recomendaciones.
+
+    Filtra el calendario al cruce deporte–discapacidad del perfil y añade
+    `usuario_resuelto` para que el cliente muestre quién se analizó.
+    """
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         result = await agent.analizar_rendimiento(ctx.id, authorization=ctx.authorization)
@@ -62,7 +75,7 @@ async def obtener_modo_competencia(
     usuario_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
-    """RF53 — estado del modo competencia conectado al progreso del panel."""
+    """RF53 — estado persistido del modo competencia y % del plan (checklist + sesiones)."""
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.obtener_modo(ctx.id, authorization=ctx.authorization)
@@ -79,7 +92,11 @@ async def modo_competencia(
     body: ModoCompetenciaRequest = Body(default_factory=ModoCompetenciaRequest),
     authorization: Optional[str] = Header(None),
 ):
-    """RF53 — activa/desactiva modo competencia con plan de preparación."""
+    """RF53 — activa o desactiva el modo competencia y genera el plan de preparación.
+
+    Si `activar` es true, fija evento objetivo (explícito o el más próximo) y
+    persiste fases, checklist y semanas. Si es false, vuelve a entrenamiento base.
+    """
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.activar_modo(
@@ -105,7 +122,7 @@ async def marcar_checklist(
     body: ChecklistRequest = Body(...),
     authorization: Optional[str] = Header(None),
 ):
-    """Marca un punto de la lista del plan de competencia."""
+    """RF53 — marca o desmarca un ítem del checklist del plan activo."""
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.marcar_checklist(
@@ -129,7 +146,11 @@ async def registrar_sesion(
     body: SesionRequest = Body(...),
     authorization: Optional[str] = Header(None),
 ):
-    """Registra una sesión de rutina inscrita para subir el % del plan."""
+    """RF53 — registra una sesión de rutina inscrita para avanzar el % del plan.
+
+    Requiere modo competencia activo y que el atleta esté unido a esa rutina.
+    Solo se admite una sesión por rutina y día.
+    """
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.registrar_sesion(

@@ -23,11 +23,12 @@ from app.database.repositorio import (
 
 
 def _ahora() -> datetime:
+    """Instante actual en UTC, usado como referencia de vencimiento."""
     return datetime.now(timezone.utc)
 
 
 def filtro_anterior(campo: str, cutoff: datetime) -> dict[str, Any]:
-    """Acepta Date de Mongo o string ISO guardado por el código."""
+    """Filtro `$or` que cubre Date nativo de Mongo y strings ISO guardados por el código."""
     return {
         "$or": [
             {campo: {"$lt": cutoff}},
@@ -37,6 +38,7 @@ def filtro_anterior(campo: str, cutoff: datetime) -> dict[str, Any]:
 
 
 async def _borrar(coleccion: str, filtro: dict[str, Any]) -> int:
+    """Borra los documentos que cumplen el filtro; 0 si no hay conexión."""
     db = get_db()
     if db is None:
         return 0
@@ -45,6 +47,7 @@ async def _borrar(coleccion: str, filtro: dict[str, Any]) -> int:
 
 
 def _parse_fecha(valor: Any) -> datetime | None:
+    """Convierte datetime o ISO a UTC; None si el valor no es una fecha reconocible."""
     if isinstance(valor, datetime):
         return valor if valor.tzinfo else valor.replace(tzinfo=timezone.utc)
     if not valor:
@@ -59,6 +62,7 @@ def _parse_fecha(valor: Any) -> datetime | None:
 
 
 def _purgar_quizzes_memoria(now: datetime) -> int:
+    """Elimina quizzes vencidos del almacén en memoria del agente y devuelve cuántos quitó."""
     try:
         from app.agents.quiz_agent import _QUIZ_STORE
     except Exception:
@@ -84,6 +88,7 @@ def _purgar_quizzes_memoria(now: datetime) -> int:
 
 
 async def purgar_datos_efimeros() -> dict[str, int]:
+    """Borra chats, quizzes, alertas, planes y RPE vencidos; no toca catálogos ni competencia."""
     now = _ahora()
     quizzes_memoria = _purgar_quizzes_memoria(now)
     if get_db() is None:
@@ -144,6 +149,7 @@ async def purgar_datos_efimeros() -> dict[str, int]:
 
 
 async def bucle_retencion() -> None:
+    """Tarea infinita que ejecuta la purga cada `RETENCION_INTERVALO_SEGUNDOS`."""
     intervalo = max(60, settings.RETENCION_INTERVALO_SEGUNDOS)
     await asyncio.sleep(20)
     while True:

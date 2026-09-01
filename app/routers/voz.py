@@ -16,6 +16,8 @@ accessibility = AccessibilityService()
 
 
 class VozRequest(BaseModel):
+    """Comando de voz transcrito y, opcionalmente, tipo de discapacidad/idioma."""
+
     texto: str = Field(..., min_length=1)
     usuario_id: Optional[str] = None
     disability_type: Optional[str] = None
@@ -24,6 +26,11 @@ class VozRequest(BaseModel):
 
 @router.post("/comando")
 async def comando_voz(request: VozRequest, authorization: Optional[str] = Header(None)):
+    """RF46 — interpreta un comando de voz y responde con el asistente de chat.
+
+    Clasifica una acción grosera (rutina, eventos, deportes o chat), pide a
+    accessibility una interpretación y reutiliza el ChatbotAgent para la respuesta.
+    """
     try:
         ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
         discapacidad = discapacidad_efectiva(

@@ -9,6 +9,7 @@ class CompetenciaAccionError(Exception):
     """Acción de plan inválida (modo inactivo, ítem inexistente, etc.)."""
 
     def __init__(self, status: int, detail: str):
+        """Guarda código HTTP y mensaje de negocio para que el router lo traduzca."""
         self.status = status
         self.detail = detail
         super().__init__(detail)
@@ -40,6 +41,7 @@ def normalizar_checklist(plan: Optional[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def sesiones_hechas_doc(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extrae la lista de sesiones de rutina registradas en el documento de modo."""
     raw = (doc or {}).get("sesiones_hechas") or []
     if not isinstance(raw, list):
         return []
@@ -47,6 +49,7 @@ def sesiones_hechas_doc(doc: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def sesiones_objetivo_plan(plan: Optional[dict[str, Any]], semanas: int) -> int:
+    """Suma las sesiones sugeridas de las fases; si no hay, estima 3 por semana (2 la última)."""
     total = 0
     for fase in (plan or {}).get("fases") or []:
         if isinstance(fase, dict):
@@ -58,6 +61,7 @@ def sesiones_objetivo_plan(plan: Optional[dict[str, Any]], semanas: int) -> int:
 
 
 def _semana_por_sesiones(plan: Optional[dict[str, Any]], semanas: int, hechas: int) -> int:
+    """Infiere la semana actual del plan según cuántas sesiones de rutina ya se registraron."""
     fases = [f for f in ((plan or {}).get("fases") or []) if isinstance(f, dict)]
     if not fases:
         por_semana = max(1, sesiones_objetivo_plan(plan, semanas) // max(1, semanas))
@@ -126,6 +130,7 @@ def fases_con_sesiones(
     sesiones_hechas: int,
     semana_actual: int,
 ) -> list[dict[str, Any]]:
+    """Anota en cada fase cuántas sesiones van hechas y cuál es la semana actual."""
     restantes = max(0, int(sesiones_hechas or 0))
     out: list[dict[str, Any]] = []
     for fase in (plan or {}).get("fases") or []:
@@ -151,6 +156,7 @@ def fases_con_sesiones(
 
 
 def rutinas_inscritas_vista(rutinas: Optional[list]) -> list[dict[str, str]]:
+    """Lista id/nombre de rutinas activas (sin canceladas ni duplicados) para la UI."""
     items: list[dict[str, str]] = []
     vistos: set[str] = set()
     for row in rutinas or []:

@@ -1,3 +1,5 @@
+"""RF44 — generación y consulta de planes de entrenamiento multi-sesión."""
+
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
@@ -11,6 +13,8 @@ agent = PlanesAgent()
 
 
 class PlanRequest(BaseModel):
+    """Parámetros para armar un plan semanal adaptado a objetivo y discapacidad."""
+
     usuario_id: Optional[str] = None
     objetivo: str = "general"
     discapacidad: Optional[str] = None
@@ -22,6 +26,10 @@ class PlanRequest(BaseModel):
 
 @router.post("/generar")
 async def generar_plan(request: PlanRequest, authorization: Optional[str] = Header(None)):
+    """RF44 — genera un plan de varias semanas con progresión y lo persiste.
+
+    La discapacidad se toma del token salvo que ADMIN/ENTRENADOR la fuerce.
+    """
     try:
         ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
         discapacidad = discapacidad_efectiva(
@@ -46,6 +54,7 @@ async def generar_plan(request: PlanRequest, authorization: Optional[str] = Head
 
 @router.get("/{plan_id}")
 async def obtener_plan(plan_id: str, authorization: Optional[str] = Header(None)):
+    """RF44 — recupera un plan previamente generado por su `plan_id`."""
     await resolver_contexto(authorization, require_auth=True)
     plan = await agent.obtener_plan(plan_id)
     if not plan:

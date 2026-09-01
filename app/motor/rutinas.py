@@ -65,6 +65,7 @@ _ALIAS_NIVEL: dict[str, tuple[str, ...]] = {
 
 
 def _detectar(texto: str, alias: dict[str, tuple[str, ...]]) -> Optional[str]:
+    """Devuelve la primera clave cuyo alias aparece en el texto normalizado."""
     limpio = normalizar(texto or "")
     if not limpio:
         return None
@@ -75,6 +76,7 @@ def _detectar(texto: str, alias: dict[str, tuple[str, ...]]) -> Optional[str]:
 
 
 def interpretar_objetivo(texto: str) -> str:
+    """Clave de objetivo (fuerza, resistencia…) o «general» si no hay coincidencia."""
     return _detectar(texto, _ALIAS_OBJETIVO) or "general"
 
 
@@ -96,14 +98,17 @@ def interpretar_objetivos(objetivo_texto: str, tipo_texto: str = "") -> tuple[st
 
 
 def interpretar_posicion(texto: str) -> Optional[str]:
+    """Posición de trabajo (silla, sentado, de_pie…) o None si no se menciona."""
     return _detectar(texto, _ALIAS_POSICION)
 
 
 def interpretar_nivel(texto: str) -> Optional[str]:
+    """Nivel (principiante/intermedio/avanzado) detectado en el texto, o None."""
     return _detectar(texto, _ALIAS_NIVEL)
 
 
 def perfil_de(discapacidad: str) -> dict[str, Any]:
+    """Criterios de prescripción del perfil; si la clave no existe, usa «general»."""
     return PERFILES_DISCAPACIDAD.get(discapacidad, PERFILES_DISCAPACIDAD["general"])
 
 
@@ -127,12 +132,14 @@ def _apto_para(ejercicio: dict, discapacidad: str) -> bool:
 
 
 def _apto_posicion(ejercicio: dict, posicion: Optional[str]) -> bool:
+    """False si la posición pedida es incompatible con la del ejercicio (p. ej. silla vs de pie)."""
     if not posicion:
         return True
     return ejercicio.get("posicion") not in _INCOMPATIBLES_POSICION.get(posicion, ())
 
 
 def _apto_nivel(ejercicio: dict, nivel: str) -> bool:
+    """True si el nivel del ejercicio no supera el nivel máximo pedido."""
     return NIVEL_ORDEN.get(ejercicio["nivel"], 2) <= NIVEL_ORDEN.get(nivel, 2)
 
 
@@ -153,6 +160,7 @@ def _puntuar(
     discapacidad: str,
     objetivo_secundario: Optional[str] = None,
 ) -> float:
+    """Puntúa cuánto encaja el ejercicio con objetivo, posición, nivel y discapacidad."""
     puntaje = 0.0
     objetivos_ej = ejercicio.get("objetivos") or []
     # El objetivo pedido debe pesar más que el sesgo del perfil de discapacidad
@@ -230,6 +238,7 @@ def _sample_ponderado(
     restantes = list(ventana)
 
     def _tomar(preferir_categoria_nueva: bool) -> Optional[dict]:
+        """Saca un ejercicio de la ventana; prioriza categorías aún no usadas si se pide."""
         nonlocal restantes
         candidatos = [
             (s, e) for s, e in restantes
@@ -401,7 +410,12 @@ def generar_rutina(
     catalogo: Optional[list[dict]] = None,
     excluir_ids: Optional[set[str]] = None,
 ) -> dict[str, Any]:
-    """Compone una rutina completa a partir del catálogo de ejercicios."""
+    """Compone una rutina con calentamiento, bloque principal y vuelta a la calma.
+
+    Filtra el catálogo por discapacidad, objetivo, nivel y posición. `semilla`
+    fija la selección; sin ella varía entre peticiones. `excluir_ids` evita
+    repetir ejercicios de una rutina reciente del mismo usuario.
+    """
     ejercicios_disponibles = catalogo or CATALOGO_EJERCICIOS
     clave_discapacidad = canonizar(discapacidad)
     objetivo, objetivo_secundario = interpretar_objetivos(objetivo_texto, tipo_texto)

@@ -1,3 +1,5 @@
+"""Chat del asistente (RF46): mensaje, stream SSE e historial de conversaciones."""
+
 import json
 import uuid
 from typing import Optional
@@ -19,7 +21,11 @@ conversaciones = ConversacionService()
 
 
 class ChatRequestAuth(BaseModel):
-    """Body del chat. No confundir con POST /api/ai/rutinas/generar."""
+    """Cuerpo del chat conversacional. No confundir con POST /api/ai/rutinas/generar.
+
+    Acepta alias (`session_id`, `message`/`text`) para compatibilidad con Postman
+    y el front. `limitacion` marca zonas de dolor en el mapa corporal.
+    """
 
     mensaje: str = Field(
         ...,
@@ -52,6 +58,7 @@ class ChatRequestAuth(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _aliases(cls, data):
+        """Normaliza alias de cliente (`session_id`, `message`, `pain`) al esquema interno."""
         if not isinstance(data, dict):
             return data
         # session_id → conversacion_id
@@ -73,6 +80,7 @@ class ChatRequestAuth(BaseModel):
     @field_validator("mensaje")
     @classmethod
     def _mensaje_no_vacio(cls, v: str) -> str:
+        """Rechaza mensajes en blanco o solo espacios."""
         t = (v or "").strip()
         if not t:
             raise ValueError("mensaje no puede estar vacío")
@@ -80,10 +88,12 @@ class ChatRequestAuth(BaseModel):
 
     @property
     def hilo_id(self) -> Optional[str]:
+        """Identificador de conversación: `conversacion_id` o su alias `session_id`."""
         return self.conversacion_id or self.session_id
 
 
 def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatResponse:
+    """Empaqueta el dict del agente en ChatResponse con cards, MCP y perfil de sesión."""
     cid = resultado.get("conversacion_id") or request_hilo_id or "nueva"
     herramientas = resultado.get("herramientas_usadas") or []
     datos_crudos = resultado.get("datos") or {}
@@ -130,6 +140,7 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
 
 
 def _lista_hilos(usuario_id: str, items: list) -> dict:
+    """Arma el listado de conversaciones con alias `sessions` y cupos del servicio."""
     return {
         "usuario_id": usuario_id,
         "total": len(items),
@@ -149,6 +160,11 @@ async def chat(
     request: ChatRequestAuth,
     authorization: Optional[str] = Header(None),
 ):
+    """Procesa un mensaje del chat y devuelve la respuesta del asistente (RF46).
+
+    Continúa el hilo si llega `conversacion_id`/`session_id`; si no, reutiliza
+    la última conversación activa o crea una nueva. Requiere autenticación.
+    """
     try:
         ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
         discapacidad = discapacidad_efectiva(
@@ -176,8 +192,9 @@ async def chat_stream(
     request: ChatRequestAuth,
     authorization: Optional[str] = Header(None),
 ):
-    """Chat con SSE. Body: { \"mensaje\": \"...\", \"conversacion_id\"?: \"...\" }.
+    """Chat en streaming SSE (RF46). Body: { "mensaje": "...", "conversacion_id"?: "..." }.
 
+    Emite fases del agente (estado, herramientas) y cierra con el evento `respuesta`.
     No uses el body de rutinas (tipo/objetivo/duracion_minutos); eso va a
     POST /api/ai/rutinas/generar.
     """
@@ -187,6 +204,7 @@ async def chat_stream(
     )
 
     async def generador():
+        """Produce el flujo SSE: heartbeat inicial, eventos del agente y cierre."""
         yield ": connected\n\n"
         try:
             async for evento in agent.procesar_mensaje_stream(
@@ -228,6 +246,7 @@ async def _listar_hilos(
     incluir_archivadas: bool,
     limite: int,
 ):
+    """Lista los hilos del usuario autenticado (activas o también archivadas)."""
     ctx = await resolver_contexto(authorization, require_auth=True)
     items = await conversaciones.listar(
         ctx.id, incluir_archivadas=incluir_archivadas, limite=limite
@@ -236,6 +255,7 @@ async def _listar_hilos(
 
 
 async def _obtener_hilo(hilo_id: str, authorization: Optional[str]):
+    """Devuelve una conversación del usuario o 404 si no existe."""
     ctx = await resolver_contexto(authorization, require_auth=True)
     doc = await conversaciones.obtener(ctx.id, hilo_id)
     if not doc:
@@ -246,6 +266,7 @@ async def _obtener_hilo(hilo_id: str, authorization: Optional[str]):
 
 
 async def _borrar_hilo(hilo_id: str, authorization: Optional[str]):
+    """Elimina una conversación del usuario; 404 si el id no pertenece al token."""
     ctx = await resolver_contexto(authorization, require_auth=True)
     ok = await conversaciones.borrar(ctx.id, hilo_id)
     if not ok:
@@ -254,6 +275,7 @@ async def _borrar_hilo(hilo_id: str, authorization: Optional[str]):
 
 
 async def _archivar_hilo(hilo_id: str, authorization: Optional[str]):
+    """Archiva un hilo para que deje de aparecer en el listado activo."""
     ctx = await resolver_contexto(authorization, require_auth=True)
     ok = await conversaciones.archivar(ctx.id, hilo_id)
     if not ok:
@@ -267,6 +289,7 @@ async def _archivar_hilo(hilo_id: str, authorization: Optional[str]):
 
 
 async def _borrar_todos(authorization: Optional[str], confirmar: bool):
+    """Borra todo el historial del usuario; exige `confirmar=true` para evitar accidentes."""
     if not confirmar:
         raise HTTPException(
             status_code=400,
@@ -278,6 +301,7 @@ async def _borrar_todos(authorization: Optional[str], confirmar: bool):
 
 
 async def _nueva_sesion(authorization: Optional[str]):
+    """Genera un UUID de hilo limpio sin escribir en Mongo hasta el primer mensaje."""
     ctx = await resolver_contexto(authorization, require_auth=True)
     cid = str(uuid.uuid4())
     return {
@@ -293,7 +317,7 @@ async def _nueva_sesion(authorization: Optional[str]):
 
 @router.get("/mcp")
 async def describir_mcp(authorization: Optional[str] = Header(None)):
-    """Explica el protocolo interno de tools (estilo MCP) y lista las tools."""
+    """Describe el protocolo interno de tools (estilo MCP) y lista las herramientas disponibles."""
     await resolver_contexto(authorization, require_auth=True)
     return descripcion_protocolo()
 
@@ -306,6 +330,7 @@ async def listar_conversaciones(
     incluir_archivadas: bool = Query(False),
     limite: int = Query(20, ge=1, le=50),
 ):
+    """Lista las conversaciones del usuario (alias `/sessions` para Postman/front)."""
     return await _listar_hilos(authorization, incluir_archivadas, limite)
 
 
@@ -316,6 +341,7 @@ async def obtener_conversacion(
     conversacion_id: str,
     authorization: Optional[str] = Header(None),
 ):
+    """Devuelve un hilo concreto del usuario autenticado, con alias `session_id`."""
     return await _obtener_hilo(conversacion_id, authorization)
 
 
@@ -326,6 +352,7 @@ async def borrar_conversacion(
     conversacion_id: str,
     authorization: Optional[str] = Header(None),
 ):
+    """Elimina una conversación del historial del usuario autenticado."""
     return await _borrar_hilo(conversacion_id, authorization)
 
 
@@ -335,6 +362,7 @@ async def archivar_conversacion(
     conversacion_id: str,
     authorization: Optional[str] = Header(None),
 ):
+    """Archiva una conversación para ocultarla del listado activo."""
     return await _archivar_hilo(conversacion_id, authorization)
 
 
@@ -345,6 +373,7 @@ async def borrar_todas_conversaciones(
     authorization: Optional[str] = Header(None),
     confirmar: bool = Query(False, description="Debe ser true para borrar todo el historial"),
 ):
+    """Borra todas las conversaciones del usuario. Requiere `confirmar=true`."""
     return await _borrar_todos(authorization, confirmar)
 
 
@@ -352,5 +381,8 @@ async def borrar_todas_conversaciones(
 @router.post("/sessions")
 @router.post("/sessions/")
 async def nueva_conversacion(authorization: Optional[str] = Header(None)):
-    """Crea un id de hilo limpio (no escribe en Mongo hasta el primer mensaje)."""
+    """Crea un id de hilo limpio (no escribe en Mongo hasta el primer mensaje).
+
+    Úsalo en el próximo POST /api/ai/chat/ para no heredar el historial anterior.
+    """
     return await _nueva_sesion(authorization)

@@ -1,8 +1,11 @@
+"""Esquemas Pydantic de generación y evaluación de quices de aptitud."""
+
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 
 class QuizGenerarRequest(BaseModel):
+    """Petición para armar un quiz: usuario, número de preguntas y dificultad."""
     usuario_id: str
     num_preguntas: int = Field(default=8, ge=5, le=15)
     dificultad: str = Field(default="media", description="baja | media | alta")
@@ -13,11 +16,13 @@ class QuizGenerarRequest(BaseModel):
 
 
 class QuizRespuestaItem(BaseModel):
+    """Una respuesta del usuario: identificador de pregunta y opción elegida (a–d)."""
     pregunta_id: str
     opcion_id: str  # a | b | c | d
 
 
 class QuizEvaluarRequest(BaseModel):
+    """Envío de respuestas para puntuar el quiz y, si aplica, registrar el score en users."""
     usuario_id: str
     quiz_id: str
     respuestas: List[QuizRespuestaItem]
@@ -28,11 +33,13 @@ class QuizEvaluarRequest(BaseModel):
 
 
 class OpcionPublica(BaseModel):
+    """Opción visible al usuario, sin indicar si es la correcta."""
     id: str
     texto: str
 
 
 class PreguntaPublica(BaseModel):
+    """Pregunta expuesta en la generación: enunciado, opciones barajadas y tema."""
     id: str
     enunciado: str
     opciones: List[OpcionPublica]
@@ -40,6 +47,7 @@ class PreguntaPublica(BaseModel):
 
 
 class QuizGenerarResponse(BaseModel):
+    """Quiz listo para responder: id, umbral, preguntas públicas y mensaje de contexto."""
     quiz_id: str
     rol: str
     umbral_aprobacion: float
@@ -50,6 +58,7 @@ class QuizGenerarResponse(BaseModel):
 
 
 class QuizEvaluarResponse(BaseModel):
+    """Resultado de la evaluación: score, aprobación, temas a reforzar y siguiente paso."""
     quiz_id: str
     rol: str
     usuario_id: str

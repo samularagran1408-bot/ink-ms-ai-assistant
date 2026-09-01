@@ -13,7 +13,10 @@ from app.services.user_service import UserService
 
 
 class AlertasAgent:
+    """Evalúa el riesgo del atleta y notifica a entrenadores cuando hay alerta (RF55)."""
+
     def __init__(self):
+        """Inicializa servicios de usuarios, accesibilidad y el agente de riesgo."""
         self.user_service = UserService()
         self.accessibility = AccessibilityService()
         self.riesgo = RiesgoAgent()
@@ -27,6 +30,11 @@ class AlertasAgent:
         dias_sin_descanso: int = 0,
         authorization: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Calcula el riesgo (RF43) y, si aplica, crea notificaciones para entrenadores.
+
+        Genera alertas de lesión alta, fatiga/dolor o progreso destacado. Si no hay
+        `entrenador_ids`, las alertas se registran pero no se envían.
+        """
         perfil = await self.user_service.get_user_profile(usuario_id, authorization)
         evaluacion = await self.riesgo.evaluar(
             usuario_id,
@@ -109,6 +117,7 @@ class AlertasAgent:
         }
 
     async def _guardar(self, registro: dict) -> None:
+        """Persiste el registro de alertas en Mongo si la base está disponible."""
         db = get_db()
         if db is None:
             return

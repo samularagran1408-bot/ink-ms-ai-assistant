@@ -24,10 +24,12 @@ REMITENTE_ASISTENTE = "asistente"
 
 
 def _ahora() -> datetime:
+    """Instante actual en UTC, usado al persistir turnos y archivos."""
     return datetime.now(timezone.utc)
 
 
 def _recortar(texto: str, max_chars: int) -> str:
+    """Recorta ``texto`` a ``max_chars`` y añade unipsis si se pasa del tope."""
     t = (texto or "").strip()
     if len(t) <= max_chars:
         return t
@@ -35,6 +37,7 @@ def _recortar(texto: str, max_chars: int) -> str:
 
 
 def _titulo_desde_mensaje(mensaje: str) -> str:
+    """Deriva un título corto (máx. 60 caracteres) a partir del primer mensaje."""
     limpio = " ".join((mensaje or "").split())
     if not limpio:
         return "Conversación"
@@ -42,7 +45,11 @@ def _titulo_desde_mensaje(mensaje: str) -> str:
 
 
 def _resumen_local(mensajes: list[dict[str, Any]], max_chars: int) -> str:
-    """Resumen extractivo barato (sin LLM) de turnos antiguos."""
+    """Resumen extractivo barato (sin LLM) de turnos antiguos.
+
+    Concatena viñetas Usuario/Asistente y las recorta a ``max_chars`` para
+    no inflar el contexto del modelo.
+    """
     if not mensajes:
         return ""
     lineas: list[str] = []
@@ -56,7 +63,10 @@ def _resumen_local(mensajes: list[dict[str, Any]], max_chars: int) -> str:
 
 
 class ConversacionService:
+    """Persiste y recorta el historial de chat (Mongo) para API y contexto LLM."""
+
     def __init__(self) -> None:
+        """Carga los límites de mensajes, conversaciones y ventana LLM desde settings."""
         self.max_mensajes = settings.CHAT_MAX_MENSAJES_POR_CONVERSACION
         self.max_conversaciones = settings.CHAT_MAX_CONVERSACIONES_POR_USUARIO
         self.turnos_llm = settings.CHAT_HISTORIAL_LLM_TURNOS
@@ -130,6 +140,12 @@ class ConversacionService:
         mensaje_usuario: str,
         resultado: dict[str, Any],
     ) -> None:
+        """Guarda el par usuario/asistente y recorta la cola al máximo permitido.
+
+        ``resultado`` es la respuesta del agente (texto, intención, cards, etc.).
+        Si Mongo no está disponible o el texto queda vacío, no persiste nada.
+        También actualiza el resumen local y aplica el cupo de conversaciones.
+        """
         db = get_db()
         if db is None:
             return
@@ -240,6 +256,11 @@ class ConversacionService:
         incluir_archivadas: bool = False,
         limite: int = 20,
     ) -> list[dict[str, Any]]:
+        """Lista metadatos de conversaciones del usuario (sin el cuerpo de mensajes).
+
+        Por defecto solo activas, ordenadas por última interacción. ``limite`` se
+        acota entre 1 y 50. Devuelve lista vacía si Mongo no está o falla.
+        """
         db = get_db()
         if db is None:
             return []
@@ -274,6 +295,11 @@ class ConversacionService:
     async def obtener(
         self, usuario_id: str, conversacion_id: str, *, max_mensajes: Optional[int] = None
     ) -> Optional[dict[str, Any]]:
+        """Devuelve una conversación con sus últimos mensajes y los límites de cupo.
+
+        Si no existe, retorna ``None``. ``max_mensajes`` recorta la cola; si no se
+        indica, usa el tope de persistencia.
+        """
         doc = await self._buscar_doc(usuario_id, conversacion_id, exigir_id=True)
         if not doc:
             return None
@@ -309,6 +335,7 @@ class ConversacionService:
         }
 
     async def borrar(self, usuario_id: str, conversacion_id: str) -> bool:
+        """Elimina una conversación del usuario. True si se borró al menos un documento."""
         db = get_db()
         if db is None:
             return False
@@ -322,6 +349,7 @@ class ConversacionService:
             return False
 
     async def borrar_todas(self, usuario_id: str) -> int:
+        """Borra todas las conversaciones del usuario. Devuelve cuántos documentos se eliminaron."""
         db = get_db()
         if db is None:
             return 0
@@ -333,6 +361,7 @@ class ConversacionService:
             return 0
 
     async def archivar(self, usuario_id: str, conversacion_id: str) -> bool:
+        """Marca una conversación como archivada. True si el documento existía."""
         db = get_db()
         if db is None:
             return False
@@ -349,6 +378,7 @@ class ConversacionService:
     async def leer_pendiente_write(
         self, usuario_id: str, conversacion_id: str
     ) -> Optional[dict[str, Any]]:
+        """Lee la escritura MCP pendiente de confirmación, o ``None`` si no hay."""
         doc = await self._buscar_doc(usuario_id, conversacion_id, exigir_id=True)
         pendiente = (doc or {}).get("pendiente_write")
         return pendiente if isinstance(pendiente, dict) else None
@@ -362,6 +392,12 @@ class ConversacionService:
         *,
         exigir_id: bool = False,
     ) -> Optional[dict[str, Any]]:
+        """Busca el documento de conversación en Mongo.
+
+        Con ``conversacion_id`` filtra por ese id. Sin id y ``exigir_id=False``,
+        continúa la última conversación activa. ``exigir_id=True`` exige el id
+        y no hace fallback.
+        """
         db = get_db()
         if db is None:
             return None

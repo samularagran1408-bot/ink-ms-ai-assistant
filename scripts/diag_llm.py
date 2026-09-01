@@ -21,6 +21,7 @@ PROVEEDORES = {
 
 
 def cargar_env(ruta: str) -> dict[str, str]:
+    """Lee un .env simple (clave=valor) sin interpolar ni imprimir secretos."""
     valores: dict[str, str] = {}
     if not os.path.exists(ruta):
         return valores
@@ -35,6 +36,7 @@ def cargar_env(ruta: str) -> dict[str, str]:
 
 
 def _es_local(url: str) -> bool:
+    """True si la URL apunta a Ollama o a un host local (sin clave)."""
     return bool(url) and any(
         a in url for a in ("ollama", "localhost", "127.0.0.1", ":11434")
     )
@@ -59,6 +61,7 @@ def _mensaje_error(detalle: str) -> str:
 
 
 def probar(etiqueta: str, url: str, clave: str = "", cuerpo: bytes | None = None) -> bool:
+    """Hace un GET/POST al endpoint y imprime si respondió; no revela la clave."""
     cabeceras = {"Content-Type": "application/json"}
     if clave:
         cabeceras["Authorization"] = f"Bearer {clave}"
@@ -76,10 +79,12 @@ def probar(etiqueta: str, url: str, clave: str = "", cuerpo: bytes | None = None
 
 
 def main() -> None:
+    """Imprime proveedor, conectividad e intenta un chat de prueba."""
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     entorno = cargar_env(os.path.join(base, ".env"))
 
     def leer(*nombres: str) -> str:
+        """Primera variable de entorno no vacía entre los nombres dados."""
         for nombre in nombres:
             if entorno.get(nombre):
                 return entorno[nombre]

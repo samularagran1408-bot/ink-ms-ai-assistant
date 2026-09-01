@@ -1,3 +1,5 @@
+"""Cliente asíncrono de MongoDB con URIs alternativas y estado de conexión."""
+
 import re
 from typing import Optional
 
@@ -12,10 +14,12 @@ _ultimo_error: Optional[str] = None
 
 
 def ocultar_credenciales(uri: str) -> str:
+    """Enmascara la contraseña de una URI Mongo para poder loguearla con seguridad."""
     return re.sub(r"://([^:/@]+):([^@]+)@", r"://\1:***@", uri or "")
 
 
 def _uris_candidatas() -> list[str]:
+    """URI principal más las alternativas, sin duplicados y en ese orden."""
     candidatas = [settings.MONGODB_URI]
     for uri in settings.MONGODB_URI_ALTERNATIVAS:
         if uri not in candidatas:
@@ -52,6 +56,7 @@ async def connect_to_mongo() -> str:
 
 
 async def close_mongo_connection():
+    """Cierra el cliente Mongo y deja `client`/`db` en None."""
     global client, db, _uri_activa
     if client:
         client.close()
@@ -61,10 +66,12 @@ async def close_mongo_connection():
 
 
 def get_db():
+    """Base de datos activa, o None si aún no hay conexión."""
     return db
 
 
 def estado() -> dict:
+    """Resumen de conexión (URI enmascarada, nombre de BD y último error)."""
     return {
         "conectado": db is not None,
         "uri": ocultar_credenciales(_uri_activa) if _uri_activa else None,

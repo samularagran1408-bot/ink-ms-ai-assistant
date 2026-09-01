@@ -125,6 +125,10 @@ TOOLS_LOCALES = (
 
 
 def _claves_rol(roles_jwt: list[str]) -> set[str]:
+    """Normaliza roles JWT (ROLE_ADMIN, ORGANIZER, …) a claves de ``TOOLS_POR_ROL``.
+
+    Si no hay roles reconocidos, asume ``usuario``.
+    """
     claves: set[str] = set()
     for rol in roles_jwt or []:
         r = str(rol).upper().replace("ROLE_", "")
@@ -142,6 +146,7 @@ def _claves_rol(roles_jwt: list[str]) -> set[str]:
 
 
 def nombres_permitidos(roles_jwt: list[str]) -> set[str]:
+    """Tools que el usuario puede invocar: locales para todos más las de sus roles MCP."""
     nombres: set[str] = set(TOOLS_LOCALES)
     for clave in _claves_rol(roles_jwt):
         nombres.update(TOOLS_POR_ROL.get(clave, []))
@@ -152,6 +157,7 @@ def filtrar_definiciones(
     definiciones: list[dict],
     roles_jwt: list[str],
 ) -> list[dict]:
+    """Filtra definiciones OpenAI-tools dejando solo las permitidas para esos roles."""
     permitidos = nombres_permitidos(roles_jwt)
     out: list[dict] = []
     for item in definiciones:

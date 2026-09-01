@@ -11,7 +11,10 @@ from app.services.user_service import UserService
 
 
 class DeportesAgent:
+    """Ranking de deportes del catálogo según discapacidad e intereses (RF50/RF51)."""
+
     def __init__(self):
+        """Inicializa clientes de users y sports."""
         self.user_service = UserService()
         self.sports_service = SportsService()
 
@@ -22,6 +25,11 @@ class DeportesAgent:
         authorization: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        """Ordena deportes activos por compatibilidad con el perfil y recorta al `limite`.
+
+        Suma puntos por adaptaciones de la discapacidad, coincidencia de intereses
+        y dificultad básica. Devuelve también el total evaluado y cuántos son compatibles.
+        """
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad = canonizar(perfil.get("disability") or "general")
         intereses = self._intereses(perfil)
@@ -104,6 +112,7 @@ class DeportesAgent:
         }
 
     def _intereses(self, perfil: dict) -> list[str]:
+        """Extrae intereses o deportes preferidos del perfil, normalizados a minúsculas."""
         candidatos = []
         for clave in (
             "interests", "intereses", "preferredSports", "sportsInterest",

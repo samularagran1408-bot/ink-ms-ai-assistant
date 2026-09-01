@@ -1,12 +1,22 @@
+"""Cliente de ink-ms-auth para validar JWT de sesión."""
+
 import httpx
 from app.config import settings
 
 class AuthService:
+    """Valida tokens JWT contra el microservicio de autenticación."""
+
     def __init__(self):
+        """Fija la URL de validación: ``GET /api/auth/validate`` en ink-ms-auth."""
         self.auth_url = f"{settings.AUTH_SERVICE_URL}/api/auth/validate"
 
     async def validate_token(self, token: str) -> dict:
-        """Valida el token JWT contra el Auth Service"""
+        """Comprueba un JWT contra ink-ms-auth.
+
+        Llama ``GET /api/auth/validate`` con ``Authorization: Bearer``.
+        Devuelve el payload del usuario (id, roles, etc.) si el token es
+        válido (HTTP 200), o ``None`` si falta, está vacío o el servicio falla.
+        """
         if not token:
             return None
 

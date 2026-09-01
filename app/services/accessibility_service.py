@@ -8,10 +8,14 @@ from app.config import settings
 
 
 class AccessibilityService:
+    """Cliente HTTP de ink-ms-accesibility (notificaciones internas y voz)."""
+
     def __init__(self):
+        """Guarda la URL base de ink-ms-accesibility desde la configuración."""
         self.base_url = settings.ACCESSIBILITY_SERVICE_URL.rstrip("/")
 
     def _headers(self, authorization: Optional[str] = None) -> dict[str, str]:
+        """Normaliza el JWT a cabecera ``Authorization: Bearer …``; vacío si no hay token."""
         if not authorization:
             return {}
         token = authorization if authorization.startswith("Bearer ") else f"Bearer {authorization}"
@@ -27,6 +31,12 @@ class AccessibilityService:
         event_id: Optional[str] = None,
         authorization: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Crea una notificación en ink-ms-accesibility.
+
+        Llama ``POST /api/notifications/internal/create`` con el usuario, tipo,
+        título y cuerpo. Devuelve ``{ok, status, data}`` si el microservicio
+        acepta la petición, o ``{ok: False, error/status}`` si falla.
+        """
         payload = {
             "userId": user_id,
             "type": tipo,
@@ -59,6 +69,12 @@ class AccessibilityService:
         language: str = "es",
         authorization: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Interpreta un comando de voz en ink-ms-accesibility.
+
+        Llama ``POST /api/voice/interpret`` con el texto y el idioma. Devuelve
+        el JSON de interpretación (intención/entidades) o ``{ok: False, …}``
+        si el microservicio no responde 200.
+        """
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 respuesta = await client.post(

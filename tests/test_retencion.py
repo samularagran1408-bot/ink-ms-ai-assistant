@@ -11,6 +11,7 @@ from app.database.retencion import filtro_anterior, _purgar_quizzes_memoria  # n
 
 
 def test_filtro_anterior_cubre_date_e_iso():
+    """El filtro de retención compara tanto datetime como ISO string."""
     cutoff = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
     filtro = filtro_anterior("creado_en", cutoff)
     ramas = filtro["$or"]
@@ -19,6 +20,7 @@ def test_filtro_anterior_cubre_date_e_iso():
 
 
 def test_purga_quiz_evaluado_a_las_2_horas():
+    """Borra quices evaluados viejos y activos caducados; conserva los recientes."""
     quiz_agent._QUIZ_STORE.clear()
     ahora = datetime.now(timezone.utc)
     quiz_agent._QUIZ_STORE["viejo"] = {

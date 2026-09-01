@@ -11,6 +11,7 @@ _MCP_TIMEOUT = 30.0
 
 
 def _openai_tool(tool: Any) -> dict[str, Any]:
+    """Convierte una tool MCP al esquema ``function`` que espera el LLM estilo OpenAI."""
     schema = getattr(tool, "inputSchema", None) or {"type": "object", "properties": {}}
     if not isinstance(schema, dict):
         schema = {"type": "object", "properties": {}}
@@ -25,6 +26,7 @@ def _openai_tool(tool: Any) -> dict[str, Any]:
 
 
 def _texto_resultado(resultado: Any) -> str:
+    """Extrae texto o JSON estructurado de la respuesta de ``call_tool`` del SDK MCP."""
     parts: list[str] = []
     for bloque in getattr(resultado, "content", None) or []:
         texto = getattr(bloque, "text", None)
@@ -41,6 +43,7 @@ def _texto_resultado(resultado: Any) -> str:
 
 
 def _parsear_json(texto: str) -> Any:
+    """Intenta ``json.loads``; si el texto no es JSON, lo envuelve en ``{"raw": …}``."""
     try:
         return json.loads(texto)
     except json.JSONDecodeError:
@@ -48,6 +51,7 @@ def _parsear_json(texto: str) -> Any:
 
 
 def _headers_auth(authorization: Optional[str]) -> dict[str, str]:
+    """Normaliza el JWT a ``Authorization: Bearer …`` para el servidor MCP."""
     if not authorization:
         return {}
     valor = (
@@ -59,6 +63,7 @@ def _headers_auth(authorization: Optional[str]) -> dict[str, str]:
 
 
 def _unpack_streams(streams: Any) -> tuple[Any, Any]:
+    """Obtiene los streams read/write del cliente MCP (objeto o tupla)."""
     if hasattr(streams, "read") and hasattr(streams, "write"):
         return streams.read, streams.write
     if isinstance(streams, (tuple, list)) and len(streams) >= 2:
@@ -67,6 +72,7 @@ def _unpack_streams(streams: Any) -> tuple[Any, Any]:
 
 
 def _http_client(headers: dict[str, str]):
+    """Crea el cliente HTTP del SDK MCP, con fallback a httpx si el helper no existe."""
     try:
         from mcp.shared._httpx_utils import create_mcp_http_client
 
@@ -93,6 +99,7 @@ def _http_client(headers: dict[str, str]):
 
 
 async def _con_sesion(authorization: Optional[str], operacion):
+    """Abre una sesión Streamable HTTP contra MCP_URL, inicializa y ejecuta ``operacion``."""
     from mcp.client.session import ClientSession
     from mcp.client.streamable_http import streamable_http_client
 
@@ -119,6 +126,7 @@ async def listar_tools_openai(authorization: Optional[str] = None) -> list[dict[
         return []
 
     async def _listar(session):
+        """Pide ``list_tools`` al servidor MCP y las convierte al formato OpenAI."""
         respuesta = await session.list_tools()
         return [_openai_tool(t) for t in (respuesta.tools or [])]
 
@@ -144,6 +152,7 @@ async def llamar_tool(
         return {"success": False, "error": "SDK MCP no instalado", "via": "asistente"}
 
     async def _llamar(session):
+        """Ejecuta ``call_tool`` y parsea el contenido a dict JSON."""
         resultado = await session.call_tool(nombre, argumentos or {})
         texto = _texto_resultado(resultado)
         datos = _parsear_json(texto)

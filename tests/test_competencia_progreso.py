@@ -15,6 +15,7 @@ from app.agents.competencia_progreso import (  # noqa: E402
 
 
 def _plan(semanas=3, checklist=None, fases=None):
+    """Fabrica un plan de competencia de prueba (checklist y fases por semana)."""
     if fases is None:
         fases = [
             {"semana": i, "sesiones_sugeridas": 3 if i < semanas else 2}
@@ -24,11 +25,13 @@ def _plan(semanas=3, checklist=None, fases=None):
 
 
 def test_inactivo_queda_en_cero():
+    """Sin documento o con plan inactivo el porcentaje debe ser 0."""
     assert progreso_plan_desde_doc(None)["plan_pct"] == 0
     assert progreso_plan_desde_doc({"activo": False})["plan_pct"] == 0
 
 
 def test_plan_recien_activado_empieza_en_cero():
+    """Un plan recién activado empieza en semana 1 y 0% de progreso."""
     doc = {"activo": True, "semanas": 3, "plan": _plan()}
     prog = progreso_plan_desde_doc(doc)
     assert prog["plan_pct"] == 0
@@ -37,6 +40,7 @@ def test_plan_recien_activado_empieza_en_cero():
 
 
 def test_solo_checklist_completa_mitad():
+    """Checklist al 100% y 0 sesiones equivale al 50% del plan mixto."""
     checklist = [
         {"id": "a", "texto": "Uno", "hecho": True},
         {"id": "b", "texto": "Dos", "hecho": True},
@@ -51,6 +55,7 @@ def test_solo_checklist_completa_mitad():
 
 
 def test_solo_sesiones_completas_mitad():
+    """Todas las sesiones hechas y checklist vacío equivalen al 50% del plan."""
     doc = {
         "activo": True,
         "semanas": 3,
@@ -65,6 +70,7 @@ def test_solo_sesiones_completas_mitad():
 
 
 def test_mixto_mitad_lista_y_mitad_sesiones():
+    """50% checklist + 50% sesiones da 50% global y avanza a la semana 2."""
     checklist = [
         {"id": "a", "texto": "Uno", "hecho": True},
         {"id": "b", "texto": "Dos", "hecho": True},
@@ -85,6 +91,7 @@ def test_mixto_mitad_lista_y_mitad_sesiones():
 
 
 def test_completar_semana_1_avanza_a_semana_2():
+    """Al completar las 3 sesiones de la semana 1, la actual pasa a 2."""
     doc = {
         "activo": True,
         "semanas": 3,
@@ -97,6 +104,7 @@ def test_completar_semana_1_avanza_a_semana_2():
 
 
 def test_checklist_legado_en_strings():
+    """Un checklist antiguo (lista de strings) se normaliza a items con id."""
     plan = {"checklist": ["Uno", "Dos"]}
     items = normalizar_checklist(plan)
     assert items[0]["id"] == "c1"
@@ -106,6 +114,7 @@ def test_checklist_legado_en_strings():
 
 
 def test_fases_reparten_sesiones():
+    """Reparte las sesiones hechas entre fases y marca la semana actual."""
     plan = _plan()
     fases = fases_con_sesiones(plan, 4, 2)
     assert fases[0]["sesiones"] == "3/3"
@@ -115,11 +124,13 @@ def test_fases_reparten_sesiones():
 
 
 def test_sesiones_objetivo_sin_fases():
+    """Sin fases, el objetivo de sesiones se infiere por el número de semanas."""
     assert sesiones_objetivo_plan({}, 3) == 8
     assert sesiones_objetivo_plan({}, 1) == 2
 
 
 def test_rutinas_inscritas_filtra_canceladas():
+    """Omite rutinas canceladas y duplicados, dejando una vista limpia."""
     rows = [
         {"routineId": "r1", "routineName": "Fuerza", "status": "active"},
         {"routineId": "r2", "routineName": "X", "status": "cancelled"},
@@ -130,6 +141,7 @@ def test_rutinas_inscritas_filtra_canceladas():
 
 
 def _ejecutar_todo() -> int:
+    """Corre todas las test_* de este módulo y devuelve 1 si alguna falla."""
     pruebas = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fallidas = 0
     for prueba in pruebas:

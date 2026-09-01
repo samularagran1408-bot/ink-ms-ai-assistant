@@ -22,7 +22,10 @@ _RECIENTES: dict[str, Deque[str]] = defaultdict(lambda: deque(maxlen=24))
 
 
 class RutinasAgent:
+    """Genera sesiones a partir del catálogo de ejercicios adaptados (RF41)."""
+
     def __init__(self):
+        """Inicializa LLM (nota de acompañamiento) y el cliente de users."""
         self.llm = LLMService()
         self.user_service = UserService()
 
@@ -38,6 +41,12 @@ class RutinasAgent:
         authorization: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        """Arma una rutina del catálogo adaptada a discapacidad, objetivo y nivel.
+
+        Sin `semilla` varía los ejercicios (evita repetir los 24 últimos del usuario).
+        El LLM, si está disponible, solo añade `nota_personalizada`; nunca elige
+        los ejercicios.
+        """
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad_final = discapacidad or perfil.get("disability") or "general"
         nombre = perfil.get("fullName") or "Usuario"

@@ -20,6 +20,7 @@ def _p(
     explicacion: str,
     dificultad: str = "media",
 ) -> dict[str, Any]:
+    """Arma un dict de pregunta con índice de la opción correcta y metadatos del tema."""
     return {
         "id": id,
         "enunciado": enunciado,

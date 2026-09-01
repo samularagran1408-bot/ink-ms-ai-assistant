@@ -250,10 +250,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 
 def accion_de_tool(nombre: str) -> Optional[str]:
+    """Traduce el name OpenAI de la tool a la acción interna de ``ChatbotAgent._enriquecer``."""
     return _TOOL_A_ACCION.get((nombre or "").strip())
 
 
 def nombres_tools() -> list[str]:
+    """Nombres de las tools locales del catálogo (claves de ``_TOOL_A_ACCION``)."""
     return list(_TOOL_A_ACCION.keys())
 
 

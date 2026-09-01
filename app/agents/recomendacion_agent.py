@@ -18,7 +18,10 @@ ESTADOS_DESCARTADOS = {"cancelled", "finished", "cancelado", "finalizado"}
 
 
 class RecomendacionAgent:
+    """Puntúa eventos reales de sports y recomienda los más compatibles (RF49)."""
+
     def __init__(self):
+        """Inicializa LLM (mensaje de cierre), users y sports."""
         self.llm = LLMService()
         self.user_service = UserService()
         self.sports_service = SportsService()
@@ -30,6 +33,11 @@ class RecomendacionAgent:
         authorization: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        """Devuelve hasta `limite` eventos abiertos no inscritos, ordenados por puntaje.
+
+        Descarta cancelados, finalizados y fechas pasadas. El LLM, si está
+        disponible, solo redacta el mensaje de cierre; el ranking es heurístico.
+        """
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad_origen = perfil.get("disability") or "general"
         discapacidad = canonizar(discapacidad_origen)
@@ -133,6 +141,7 @@ class RecomendacionAgent:
         inscripciones: set[str],
         authorization: Optional[str],
     ) -> list[dict[str, Any]]:
+        """Asigna puntaje a cada evento (adaptaciones, fecha, cupos, estado) y los ordena."""
         adaptaciones_cache: dict[Any, list[dict]] = {}
         hoy = date.today()
         candidatos = []
@@ -216,6 +225,7 @@ class RecomendacionAgent:
 
     @staticmethod
     def _dias_hasta(fecha_evento: Any, hoy: date) -> Optional[int]:
+        """Días hasta la fecha ISO del evento; negativo si ya pasó. None si no hay fecha."""
         if not fecha_evento:
             return None
         try:
@@ -232,6 +242,7 @@ class RecomendacionAgent:
         compatibles: int,
         total: int,
     ) -> str:
+        """Redacta el mensaje de cierre; usa LLM si está disponible, si no un texto fijo."""
         base = (
             f"{nombre}, encontré {len(recomendados)} evento(s) recomendables de "
             f"{total} disponibles"

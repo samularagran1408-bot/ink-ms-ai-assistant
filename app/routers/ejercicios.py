@@ -13,5 +13,9 @@ router = APIRouter()
 async def adaptar_ejercicio_alias(
     request: AdaptarRequest, authorization: Optional[str] = Header(None)
 ):
-    """RF42 — mismo contrato que POST /api/ai/rutinas/adaptar."""
+    """RF42 — adapta un ejercicio del catálogo a la discapacidad del perfil.
+
+    Alias canónico de POST /api/ai/rutinas/adaptar: mismo cuerpo y misma respuesta
+    (modificaciones, pauta y mapa corporal si hay limitación).
+    """
     return await adaptar_ejercicio(request, authorization)

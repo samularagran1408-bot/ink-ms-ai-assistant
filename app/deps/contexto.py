@@ -24,6 +24,7 @@ ROLES_CONSULTA_AJENA = frozenset({"ADMIN", "ENTRENADOR"})
 
 @dataclass
 class UserContext:
+    """Usuario efectivo de la petición: id, roles, discapacidad y si es demo o autenticado."""
     id: str
     email: str
     full_name: str = "Usuario"
@@ -36,10 +37,12 @@ class UserContext:
     es_demo: bool = False
 
     def tiene_rol(self, *roles: str) -> bool:
+        """True si el usuario tiene alguno de los roles indicados (sin distinguir mayúsculas)."""
         propios = {r.upper() for r in self.roles}
         return any(r.upper() in propios for r in roles)
 
     def puede_consultar_a(self, otro_id: Optional[str]) -> bool:
+        """True si consulta su propio id o si es ADMIN/ENTRENADOR consultando a otro."""
         if not otro_id or otro_id in (self.id, self.email, "me", "yo"):
             return True
         return self.tiene_rol(*ROLES_CONSULTA_AJENA)
@@ -115,6 +118,7 @@ async def resolver_contexto(
 
 
 async def require_auth(authorization: Optional[str] = Header(None)) -> UserContext:
+    """Dependencia FastAPI que exige Bearer JWT y devuelve el contexto del usuario."""
     return await resolver_contexto(authorization, require_auth=True)
 
 
@@ -124,7 +128,7 @@ def discapacidad_efectiva(
     *,
     permitir_override: bool = False,
 ) -> str:
-    """Perfil del token gana; override sólo si el rol lo permite (entrenador/admin)."""
+    """Discapacidad canónica del token; un override solo vale si el rol es entrenador/admin."""
     if override and permitir_override and ctx.tiene_rol("ADMIN", "ENTRENADOR"):
         return canonizar(override)
     return canonizar(ctx.disability_raw or ctx.disability)
@@ -136,6 +140,7 @@ def _desde_perfil(
     email_fallback: str,
     roles_extra: Optional[list[str]] = None,
 ) -> UserContext:
+    """Arma un `UserContext` a partir del dict de ink-ms-users."""
     roles = perfil.get("roles") or roles_extra or []
     if isinstance(roles, str):
         roles = [r.strip() for r in roles.split(",") if r.strip()]
@@ -155,6 +160,7 @@ def _desde_perfil(
 
 
 def _normalizar_auth(authorization: Optional[str]) -> Optional[str]:
+    """Añade el prefijo Bearer si falta; None si el header está vacío."""
     if not authorization or not authorization.strip():
         return None
     valor = authorization.strip()

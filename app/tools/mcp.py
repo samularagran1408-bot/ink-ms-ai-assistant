@@ -10,6 +10,7 @@ from app.tools.roles import nombres_permitidos
 
 
 def descripcion_protocolo() -> dict[str, Any]:
+    """Metadatos del protocolo MCP (remoto o interno) para el front o diagnóstico."""
     remoto = bool(settings.MCP_ENABLED and settings.MCP_URL)
     return {
         "nombre": "inklusport-mcp" if remoto else "mcp_interno",
@@ -43,6 +44,7 @@ def mcp_del_turno(
     fuente: str = "motor_local",
     roles: Optional[list[str]] = None,
 ) -> dict[str, Any]:
+    """Resumen MCP de un turno: tools usadas, disponibles por rol y si el LLM las eligió."""
     usadas = [h for h in (herramientas_usadas or []) if h and h != "catalogo_plataforma"]
     remoto = bool(settings.MCP_ENABLED and settings.MCP_URL)
     return {

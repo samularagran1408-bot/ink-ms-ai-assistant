@@ -1,3 +1,5 @@
+"""Esquemas Pydantic del chat: petición, respuesta y mensaje de historial."""
+
 from datetime import datetime
 from typing import Any, Optional
 
@@ -5,6 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
+    """Cuerpo de POST /chat: mensaje, conversación opcional y limitación corporal."""
     mensaje: str
     usuario_id: Optional[str] = None
     disability_type: Optional[str] = Field(
@@ -22,6 +25,7 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    """Respuesta del chatbot: texto, intención, cards, tools usadas y mapa corporal."""
     conversacion_id: str
     respuesta: str
     intencion: str
@@ -47,6 +51,7 @@ class ChatResponse(BaseModel):
 
 
 class Mensaje(BaseModel):
+    """Turno persistido en el historial de una conversación."""
     mensaje: str
     remitente: str
     intencion: Optional[str] = None

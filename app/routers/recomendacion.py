@@ -1,3 +1,5 @@
+"""RF49 — recomendación de eventos reales según el perfil del atleta."""
+
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -16,7 +18,11 @@ async def recomendar_eventos(
     limite: int = Query(default=3, ge=1, le=10),
     authorization: Optional[str] = Header(None),
 ):
-    """RF49 — usa el perfil del token; path usuario_id sólo para ADMIN/ENTRENADOR."""
+    """RF49 — ranking de eventos abiertos compatibles con el perfil del token.
+
+    El `usuario_id` de la ruta sólo lo pueden usar ADMIN/ENTRENADOR para consultar
+    a otro atleta. `limite` acota cuántos eventos se recomiendan (1–10).
+    """
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.recomendar_eventos(

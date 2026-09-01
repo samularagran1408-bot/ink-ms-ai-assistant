@@ -32,6 +32,7 @@ _SUFIJOS = (
 
 
 def quitar_acentos(texto: str) -> str:
+    """Elimina diacríticos (á→a) para comparar texto sin depender de tildes."""
     descompuesto = unicodedata.normalize("NFD", texto or "")
     return "".join(c for c in descompuesto if unicodedata.category(c) != "Mn")
 
@@ -58,6 +59,7 @@ def raiz(palabra: str) -> str:
 
 
 def tokenizar(texto: str, quitar_vacias: bool = True) -> list[str]:
+    """Parte el texto normalizado en palabras, opcionalmente sin stopwords."""
     palabras = normalizar(texto).split()
     if quitar_vacias:
         palabras = [p for p in palabras if p not in VACIAS]
@@ -65,4 +67,5 @@ def tokenizar(texto: str, quitar_vacias: bool = True) -> list[str]:
 
 
 def raices(texto: str) -> set[str]:
+    """Conjunto de raíces de las palabras significativas del texto."""
     return {raiz(p) for p in tokenizar(texto)}

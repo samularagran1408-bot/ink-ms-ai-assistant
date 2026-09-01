@@ -1,8 +1,6 @@
-"""
-/**
- * Agente de quices de aptitud para organizadores y entrenadores.
- * Genera quizzes distintos por muestreo del banco, disciplinas y (opcional) LLM.
- */
+"""Agente de quices de aptitud para organizadores y entrenadores.
+
+Genera quizzes distintos por muestreo del banco, disciplinas y (opcional) LLM.
 """
 
 import json
@@ -33,18 +31,10 @@ _REPARTO_DIFICULTAD = {
 
 
 class QuizAgent:
-    """
-    /**
-     * Orquesta generación, evaluación y persistencia de quices de aptitud.
-     */
-    """
+    """Orquesta generación, evaluación y persistencia de quices de aptitud."""
 
     def __init__(self):
-        """
-        /**
-         * Inicializa dependencias de LLM, users y sports.
-         */
-        """
+        """Inicializa dependencias de LLM, users y sports."""
         self.llm = LLMService()
         self.user_service = UserService()
         self.sports_service = SportsService()
@@ -61,10 +51,11 @@ class QuizAgent:
         authorization: Optional[str] = None,
         discipline_sport_ids: Optional[list[int]] = None,
     ) -> dict[str, Any]:
-        """
-        /**
-         * Genera un quiz personalizado por disciplinas tras validar el prep en users.
-         */
+        """Genera un quiz personalizado por disciplinas tras validar el prep en users.
+
+        Exige rol ORGANIZADOR/ENTRENADOR, cuenta activa, intentos restantes y al
+        menos una disciplina. Mezcla banco y (opcional) preguntas del LLM, baraja
+        opciones y oculta la respuesta correcta en la respuesta pública.
         """
         rol = (rol or "").upper()
         if rol not in ROLES_VALIDOS:
@@ -140,11 +131,7 @@ class QuizAgent:
 
     @staticmethod
     def _assert_puede_generar(perfil: dict, prep: dict) -> None:
-        """
-        /**
-         * Valida cuenta activa, intentos restantes y datos de prep antes de generar.
-         */
-        """
+        """Valida cuenta activa, intentos restantes y datos de prep antes de generar."""
         if perfil and perfil.get("isActive") is False:
             raise ValueError("No se pudo completar el acceso.")
         if prep.get("quizPassed"):
@@ -165,11 +152,7 @@ class QuizAgent:
     def _resolver_disciplinas(
         request_ids: Optional[list[int]], prep: dict, perfil: dict
     ) -> list[int]:
-        """
-        /**
-         * Obtiene IDs de disciplinas desde el request, el prep o el perfil del usuario.
-         */
-        """
+        """Obtiene IDs de disciplinas desde el request, el prep o el perfil del usuario."""
         candidatos: list[Any] = []
         if request_ids:
             candidatos = list(request_ids)
@@ -193,11 +176,7 @@ class QuizAgent:
 
     @staticmethod
     def _nombres_disciplinas(ids: list[int], contexto: dict) -> list[str]:
-        """
-        /**
-         * Traduce sport IDs a nombres usando el catálogo de deportes del contexto.
-         */
-        """
+        """Traduce sport IDs a nombres usando el catálogo de deportes del contexto."""
         por_id = {
             int(d["id"]): str(d.get("nombre") or d.get("name") or "")
             for d in (contexto.get("deportes") or [])
@@ -208,16 +187,13 @@ class QuizAgent:
 
     @staticmethod
     def _priorizar_por_disciplinas(banco: list[dict], disciplinas: list[str]) -> list[dict]:
-        """
-        /**
-         * Ordena el banco priorizando preguntas alineadas a las disciplinas del usuario.
-         */
-        """
+        """Ordena el banco priorizando preguntas alineadas a las disciplinas del usuario."""
         if not banco or not disciplinas:
             return banco
         claves = [d.lower() for d in disciplinas if d]
 
         def score(pregunta: dict) -> int:
+            """Cuenta coincidencias de disciplinas en enunciado/tema y suma bonus de temas clave."""
             texto = " ".join([
                 str(pregunta.get("enunciado") or ""),
                 str(pregunta.get("tema") or ""),
@@ -238,11 +214,7 @@ class QuizAgent:
     def _muestrear(
         self, banco: list[dict], cantidad: int, dificultad: str, azar: random.Random
     ) -> list[dict]:
-        """
-        /**
-         * Muestra equilibrada por dificultad y con temas lo más variados posible.
-         */
-        """
+        """Muestra equilibrada por dificultad y con temas lo más variados posible."""
         if not banco:
             return []
 
@@ -269,11 +241,7 @@ class QuizAgent:
 
     @staticmethod
     def _diversificar_temas(preguntas: list[dict], azar: random.Random) -> list[dict]:
-        """
-        /**
-         * Reordena para que no queden juntas varias preguntas del mismo tema.
-         */
-        """
+        """Reordena para que no queden juntas varias preguntas del mismo tema."""
         por_tema: dict[str, list[dict]] = defaultdict(list)
         for pregunta in preguntas:
             por_tema[pregunta.get("tema", "general")].append(pregunta)
@@ -291,22 +259,14 @@ class QuizAgent:
     def _mezclar_fuentes(
         banco: list[dict], generadas: list[dict], cantidad: int, azar: random.Random
     ) -> list[dict]:
-        """
-        /**
-         * Reserva hasta un tercio del quiz a preguntas del LLM.
-         */
-        """
+        """Reserva hasta un tercio del quiz a preguntas generadas por el LLM."""
         cupo_llm = min(len(generadas), max(1, cantidad // 3))
         elegidas = azar.sample(generadas, cupo_llm)
         return (banco[: cantidad - cupo_llm]) + elegidas
 
     @staticmethod
     def _barajar_opciones(pregunta: dict, azar: random.Random) -> dict[str, Any]:
-        """
-        /**
-         * Asigna letras a las opciones en orden aleatorio y recalcula la correcta.
-         */
-        """
+        """Asigna letras a las opciones en orden aleatorio y recalcula la correcta."""
         textos = list(pregunta["opciones"])
         indice_correcto = pregunta.get("correcta_indice", 0)
         emparejadas = list(enumerate(textos))
@@ -333,11 +293,7 @@ class QuizAgent:
 
     @staticmethod
     def _preguntas_publicas(preguntas: list[dict]) -> list[dict]:
-        """
-        /**
-         * Versión pública sin la respuesta correcta para enviar al cliente.
-         */
-        """
+        """Versión pública sin la respuesta correcta ni la explicación, para el cliente."""
         return [
             {
                 "id": p["id"],
@@ -358,11 +314,7 @@ class QuizAgent:
         disciplinas: list[str],
         azar: random.Random,
     ) -> list[dict]:
-        """
-        /**
-         * Pide al LLM preguntas acotadas a las disciplinas del usuario (opcional).
-         */
-        """
+        """Pide al LLM hasta 4 preguntas acotadas a las disciplinas del usuario."""
         if not self.llm.disponible:
             return []
 
@@ -425,11 +377,7 @@ No menciones deportes fuera de: {disciplinas_txt}.
     def _validar_pregunta_llm(
         cruda: Any, posicion: int, azar: random.Random
     ) -> Optional[dict]:
-        """
-        /**
-         * Valida y normaliza una pregunta cruda del LLM; descarta formatos inválidos.
-         */
-        """
+        """Valida y normaliza una pregunta cruda del LLM; descarta formatos inválidos."""
         if not isinstance(cruda, dict):
             return None
         enunciado = str(cruda.get("enunciado") or "").strip()
@@ -465,11 +413,7 @@ No menciones deportes fuera de: {disciplinas_txt}.
         }
 
     async def _contexto_catalogo(self, authorization: Optional[str]) -> dict[str, Any]:
-        """
-        /**
-         * Construye contexto real (deportes, discapacidades, adaptaciones, eventos).
-         */
-        """
+        """Construye contexto real (deportes, discapacidades, adaptaciones, eventos)."""
         deportes = await self.sports_service.get_deportes_activos(authorization)
         discapacidades = await self.sports_service.get_discapacidades_activas(authorization)
         eventos = await self.sports_service.get_eventos_activos(authorization)
@@ -515,10 +459,10 @@ No menciones deportes fuera de: {disciplinas_txt}.
         registrar_en_users: bool = True,
         authorization: Optional[str] = None,
     ) -> dict[str, Any]:
-        """
-        /**
-         * Evalúa respuestas, registra score en users y calcula intentos restantes.
-         */
+        """Evalúa respuestas, registra el score en users y calcula intentos restantes.
+
+        Rechaza quizzes de otro rol/usuario o ya evaluados. Devuelve detalle por
+        pregunta, temas a reforzar y el siguiente paso según aprobado o no.
         """
         rol = (rol or "").upper()
         if rol not in ROLES_VALIDOS:
@@ -612,11 +556,7 @@ No menciones deportes fuera de: {disciplinas_txt}.
     # -------------------------------------------------------------- persistencia
 
     async def _guardar_quiz(self, documento: dict[str, Any]) -> None:
-        """
-        /**
-         * Persiste el quiz en memoria y, si hay Mongo, en la colección de quizzes.
-         */
-        """
+        """Persiste el quiz en memoria y, si hay Mongo, en la colección de quizzes."""
         _QUIZ_STORE[documento["quiz_id"]] = documento
         db = get_db()
         if db is None:
@@ -629,11 +569,7 @@ No menciones deportes fuera de: {disciplinas_txt}.
             print(f"Error guardando el quiz en MongoDB: {exc}")
 
     async def _cargar_quiz(self, quiz_id: str) -> Optional[dict[str, Any]]:
-        """
-        /**
-         * Recupera un quiz por id desde memoria o MongoDB.
-         */
-        """
+        """Recupera un quiz por id desde memoria o MongoDB."""
         if quiz_id in _QUIZ_STORE:
             return _QUIZ_STORE[quiz_id]
         db = get_db()

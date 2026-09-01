@@ -19,11 +19,13 @@ from app.nlp.texto import normalizar  # noqa: E402
 
 
 def test_normalizacion_quita_acentos_y_signos():
+    """Comprueba que se quitan acentos, mayúsculas y signos de interrogación."""
     assert normalizar("¿Qué rutinas hay?") == "que rutinas hay"
     assert normalizar("Adaptación FÍSICA") == "adaptacion fisica"
 
 
 def test_intenciones_reconocen_frases_naturales():
+    """Clasifica frases reales del usuario a la intención esperada."""
     esperado = {
         "¿Qué rutinas hay para mí?": "rutinas",
         "Hola!": "saludo",
@@ -59,10 +61,12 @@ def test_intenciones_reconocen_frases_naturales():
 
 
 def test_mensaje_fuera_de_dominio_no_se_clasifica():
+    """Una pregunta ajena al deporte no debe asignar intención local."""
     assert clasificar("¿cuál es la capital de Francia?")["nombre"] is None
 
 
 def test_pedidos_admin_pdf_e_inactivos():
+    """Detecta pedidos de PDF, auditoría e inactivos sin confundirlos entre sí."""
     from app.nlp.admin_pedido import (
         filtrar_usuarios,
         pide_exportar_pdf,
@@ -89,6 +93,7 @@ def test_pedidos_admin_pdf_e_inactivos():
 
 
 def test_canonizacion_de_discapacidad():
+    """Unifica etiquetas de discapacidad (visual, física→motriz, etc.)."""
     assert canonizar("Discapacidad Visual") == "visual"
     assert canonizar("fisica") == "motriz"
     assert canonizar("Pérdida parcial o total de visión") == "visual"
@@ -98,6 +103,7 @@ def test_canonizacion_de_discapacidad():
 
 
 def test_rutinas_distintas_en_llamadas_sucesivas():
+    """Sin semilla, sucesivas llamadas no deben repetir siempre los mismos ejercicios."""
     firmas = set()
     for _ in range(8):
         rutina = generar_rutina(discapacidad="visual", objetivo_texto="fuerza")
@@ -106,12 +112,14 @@ def test_rutinas_distintas_en_llamadas_sucesivas():
 
 
 def test_rutina_reproducible_con_semilla():
+    """La misma semilla produce la misma rutina (útil para pruebas y debugging)."""
     a = generar_rutina(discapacidad="visual", objetivo_texto="fuerza", semilla=99)
     b = generar_rutina(discapacidad="visual", objetivo_texto="fuerza", semilla=99)
     assert [e["id"] for e in a["ejercicios"]] == [e["id"] for e in b["ejercicios"]]
 
 
 def test_rutina_motriz_excluye_ejercicios_de_pie():
+    """Con discapacidad motriz no deben entrar ejercicios en posición de pie."""
     rutina = generar_rutina(discapacidad="motriz", objetivo_texto="fuerza")
     posiciones = {e["posicion"] for e in rutina["ejercicios"]}
     assert "de_pie" not in posiciones
@@ -119,6 +127,7 @@ def test_rutina_motriz_excluye_ejercicios_de_pie():
 
 
 def test_rutina_tiene_los_tres_bloques_y_adaptaciones():
+    """Toda rutina trae calentamiento, principal, vuelta a la calma y adaptaciones."""
     rutina = generar_rutina(discapacidad="auditiva", objetivo_texto="resistencia")
     fases = [b["fase"] for b in rutina["bloques"]]
     assert fases == ["calentamiento", "principal", "vuelta_a_la_calma"]
@@ -127,12 +136,14 @@ def test_rutina_tiene_los_tres_bloques_y_adaptaciones():
 
 
 def test_objetivo_influye_en_la_seleccion():
+    """Fuerza y flexibilidad no deben devolver la misma combinación de ejercicios."""
     fuerza = generar_rutina(discapacidad="general", objetivo_texto="ganar fuerza", semilla=1)
     flexibilidad = generar_rutina(discapacidad="general", objetivo_texto="flexibilidad", semilla=1)
     assert [e["id"] for e in fuerza["ejercicios"]] != [e["id"] for e in flexibilidad["ejercicios"]]
 
 
 def test_catalogo_de_ejercicios_es_consistente():
+    """Ids únicos, fase válida, series e instrucciones en cada ejercicio."""
     identificadores = [e["id"] for e in CATALOGO_EJERCICIOS]
     assert len(identificadores) == len(set(identificadores)), "Hay ids duplicados"
     fases = {"calentamiento", "principal", "vuelta_a_la_calma"}
@@ -143,6 +154,7 @@ def test_catalogo_de_ejercicios_es_consistente():
 
 
 def test_banco_de_quiz_es_consistente():
+    """Cada banco tiene ids únicos, ≥20 preguntas y una respuesta correcta válida."""
     for rol, banco in BANCOS.items():
         identificadores = [p["id"] for p in banco]
         assert len(identificadores) == len(set(identificadores)), f"ids duplicados en {rol}"
@@ -156,6 +168,7 @@ def test_banco_de_quiz_es_consistente():
 
 
 def test_mapa_corporal_marca_rodilla_izquierda():
+    """Extrae zonas de dolor y marca limitación lumbar en el mapa corporal."""
     from app.motor.cuerpo import extraer_zonas, mapa_corporal, debe_dibujar
 
     assert "rodilla_izq" in extraer_zonas("me duele la rodilla izquierda")
@@ -168,6 +181,7 @@ def test_mapa_corporal_marca_rodilla_izquierda():
 
 
 def test_barajado_de_opciones_conserva_la_respuesta_correcta():
+    """Tras barajar, el id marcado como correcto sigue apuntando al mismo texto."""
     from app.agents.quiz_agent import QuizAgent
 
     azar = random.Random(7)
@@ -179,6 +193,7 @@ def test_barajado_de_opciones_conserva_la_respuesta_correcta():
 
 
 def _ejecutar_todo() -> int:
+    """Corre todas las test_* de este módulo y devuelve 1 si alguna falla."""
     pruebas = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fallidas = 0
     for prueba in pruebas:

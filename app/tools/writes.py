@@ -51,10 +51,12 @@ _CANCELA = frozenset({"no", "nop", "cancelar", "cancela", "mejor no", "olvidalo"
 
 
 def es_write(nombre: str) -> bool:
+    """True si la tool muta datos en MCP y exige confirmación explícita del usuario."""
     return (nombre or "").strip() in WRITE_TOOLS
 
 
 def es_confirmacion(mensaje: str) -> bool:
+    """True si el mensaje del usuario autoriza ejecutar la escritura pendiente."""
     t = " ".join((mensaje or "").strip().lower().split())
     if t in _CONFIRMA or t.startswith("confirmo"):
         return True
@@ -62,11 +64,13 @@ def es_confirmacion(mensaje: str) -> bool:
 
 
 def es_cancelacion(mensaje: str) -> bool:
+    """True si el usuario cancela la escritura pendiente (no, cancelar, etc.)."""
     t = " ".join((mensaje or "").strip().lower().split())
     return t in _CANCELA or t.startswith("cancel")
 
 
 def resumen_write(nombre: str, args: dict[str, Any]) -> str:
+    """Frase humana de la escritura (crear evento X, bloquear a Y, …) para pedir confirmación."""
     args = args or {}
     if nombre == "inscribirse_evento":
         return f"Inscribirte al evento {args.get('event_id') or args.get('eventId') or '?'}"
@@ -131,6 +135,7 @@ def resumen_write(nombre: str, args: dict[str, Any]) -> str:
 
 
 def mensaje_pedir_confirmacion(nombre: str, args: dict[str, Any]) -> str:
+    """Texto que pide al usuario «Confirmo» o «Cancelar» antes de ejecutar la write-tool."""
     return (
         f"Voy a {resumen_write(nombre, args).lower()}. "
         "No lo haré hasta que confirmes. Responde «Confirmo» para ejecutarla "

@@ -33,7 +33,9 @@ class ChatCompletionResult:
 
     @property
     def tiene_tools(self) -> bool:
+        """True si el modelo pidió una o más llamadas a herramientas."""
         return bool(self.tool_calls)
+
 
 CONTEXTO_DISCAPACIDAD = {
     "visual": "Describe todo verbalmente. Evita referencias como 'mira' u 'observa'.",
@@ -136,10 +138,12 @@ _FALLBACKS_OPENROUTER = (
 
 
 def _es_url_local(url: str) -> bool:
+    """True si la URL apunta a Ollama u otro anfitrión local (sin clave)."""
     return bool(url) and any(a in url for a in _ANFITRIONES_LOCALES)
 
 
 def _es_rate_limit(status: int, cuerpo: str) -> bool:
+    """Detecta HTTP 429 o mensajes de rate-limit en el cuerpo de error."""
     if status == 429:
         return True
     bajo = (cuerpo or "").lower()
@@ -164,6 +168,8 @@ def _es_tools_no_soportado(status: int, cuerpo: str) -> bool:
 
 
 class LLMService:
+    """Cliente de chat/completions (OpenAI-compatible) con cortacircuitos y fallbacks."""
+
     # Estado compartido por todas las instancias (una por agente)
     _bloqueado_hasta: float = 0.0
     _ultimo_error: Optional[str] = None
@@ -172,6 +178,7 @@ class LLMService:
     _llamadas_fallidas: int = 0
 
     def __init__(self):
+        """Lee clave, modelo, URL y timeout de settings y resuelve el proveedor."""
         self.api_key = (settings.LLM_API_KEY or "").strip()
         self.model = (settings.LLM_MODEL or "").strip()
         self.api_url = (settings.LLM_API_URL or "").strip()
@@ -212,6 +219,7 @@ class LLMService:
 
     @property
     def is_configured(self) -> bool:
+        """True si el LLM está habilitado y tiene clave (nube) o URL+modelo (local)."""
         if not self.habilitado:
             return False
         if self.requiere_clave:
@@ -225,12 +233,14 @@ class LLMService:
 
     @classmethod
     def _registrar_fallo(cls, error: str) -> None:
+        """Anota el error y activa el cooldown global para no reintentar enseguida."""
         cls._ultimo_error = error[:300]
         cls._llamadas_fallidas += 1
         cls._bloqueado_hasta = time.monotonic() + settings.LLM_COOLDOWN_SEGUNDOS
 
     @classmethod
     def _registrar_exito(cls) -> None:
+        """Limpia el cooldown y cuenta una llamada correcta al proveedor."""
         cls._ultimo_error = None
         cls._llamadas_ok += 1
         cls._ultimo_exito = time.time()
@@ -261,6 +271,7 @@ class LLMService:
         return [primario, *extras]
 
     def _validar_listo(self) -> None:
+        """Lanza RuntimeError si el LLM está deshabilitado, mal configurado o en pausa."""
         if not self.habilitado:
             raise RuntimeError("LLM deshabilitado (LLM_ENABLED=false)")
         if self.requiere_clave and not self.api_key:
@@ -275,6 +286,7 @@ class LLMService:
 
     @staticmethod
     def _parsear_mensaje(mensaje: dict[str, Any]) -> ChatCompletionResult:
+        """Normaliza el ``message`` de /chat/completions a texto y tool_calls."""
         contenido = mensaje.get("content")
         if isinstance(contenido, list):
             # Algunos proveedores devuelven content como lista de bloques
@@ -315,7 +327,12 @@ class LLMService:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
     ) -> ChatCompletionResult:
-        """Llama al proveedor y devuelve texto y/o tool_calls."""
+        """Llama al proveedor (POST a la URL de /v1/chat/completions) y devuelve texto y/o tool_calls.
+
+        Prueba el modelo configurado y, en OpenRouter, fallbacks si hay rate-limit.
+        El llamador recibe un ``ChatCompletionResult``; si el proveedor falla,
+        se activa el cortacircuitos y se lanza ``RuntimeError``.
+        """
         self._validar_listo()
         headers = self._headers()
         ultimo_error = ""
@@ -400,6 +417,7 @@ class LLMService:
         return ""
 
     def _headers(self) -> dict[str, str]:
+        """Cabeceras JSON + Bearer; OpenRouter añade Referer y X-Title del producto."""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -431,6 +449,7 @@ class LLMService:
         temperatura: float = 0.7,
         max_tokens: Optional[int] = None,
     ) -> Optional[str]:
+        """Como ``chat_mensajes`` pero devuelve None si el LLM no está disponible o falla."""
         if not self.disponible:
             return None
         try:
@@ -480,6 +499,7 @@ class LLMService:
 
     @classmethod
     def estado(cls) -> dict[str, Any]:
+        """Snapshot de configuración, cooldown y si el LLM está operativo o en motor local."""
         instancia = cls()
         pausa = max(0, int(cls._bloqueado_hasta - time.monotonic()))
 
@@ -520,6 +540,10 @@ class LLMService:
 
 
 def system_prompt(disability_type: str = "general", sistema_extra: str = "") -> str:
+    """System prompt de InkluSport adaptado al tipo de discapacidad del usuario.
+
+    ``sistema_extra`` se concatena al final (instrucciones del agente concreto).
+    """
     contexto = CONTEXTO_DISCAPACIDAD.get(
         (disability_type or "general").lower(), CONTEXTO_DISCAPACIDAD["general"]
     )

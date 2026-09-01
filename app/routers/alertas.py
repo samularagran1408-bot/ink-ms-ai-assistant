@@ -1,3 +1,5 @@
+"""RF55 — endpoints de alertas inteligentes para entrenadores."""
+
 from typing import Optional
 
 from fastapi import APIRouter, Body, Header, HTTPException
@@ -11,6 +13,8 @@ agent = AlertasAgent()
 
 
 class AlertaRequest(BaseModel):
+    """Cuerpo para evaluar riesgo del atleta y notificar a entrenadores (RF55)."""
+
     usuario_id: Optional[str] = Field(
         default=None,
         description="Atleta a evaluar. Por defecto el del token. ENTRENADOR/ADMIN pueden indicar otro.",
@@ -29,6 +33,11 @@ async def _alertas(
     dias_sin_descanso: int,
     authorization: Optional[str],
 ):
+    """Evalúa el riesgo del atleta y, si el rol lo permite, notifica a los entrenadores.
+
+    Solo ENTRENADOR/ADMIN pueden enviar `entrenador_ids`. Si el llamante es
+    entrenador y no indica destinos, se notifica a sí mismo.
+    """
     ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
     if not ctx.tiene_rol("ENTRENADOR", "ADMIN") and entrenador_ids:
         raise HTTPException(
@@ -58,7 +67,11 @@ async def alertas_entrenador(
     body: AlertaRequest = Body(default_factory=AlertaRequest),
     authorization: Optional[str] = Header(None),
 ):
-    """RF55 — requiere rol ENTRENADOR o ADMIN para notificar."""
+    """RF55 — genera alertas del atleta y notifica a entrenadores (POST /api/ai/alertas).
+
+    Requiere autenticación. Sólo ENTRENADOR o ADMIN pueden disparar notificaciones
+    a otros entrenadores; el atleta puede evaluarse a sí mismo sin destinos.
+    """
     try:
         return await _alertas(
             body.usuario_id,
@@ -80,7 +93,11 @@ async def alertas_por_entrenador(
     body: AlertaRequest = Body(default_factory=AlertaRequest),
     authorization: Optional[str] = Header(None),
 ):
-    """RF55 — alias canónico POST /api/ai/alertas/{entrenadorId}."""
+    """RF55 — alias canónico POST /api/ai/alertas/{entrenadorId}.
+
+    Fuerza el `entrenador_id` de la ruta como destinatario de la notificación,
+    además de cualquier lista enviada en el cuerpo.
+    """
     try:
         destinos = body.entrenador_ids or [entrenador_id]
         if entrenador_id not in destinos:

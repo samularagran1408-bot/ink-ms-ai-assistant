@@ -17,6 +17,11 @@ UMBRAL_CONFIANZA = 0.38
 
 @dataclass(frozen=True)
 class Intencion:
+    """Intención de chat con frases, palabras clave, prioridad y flag social.
+
+    `raices` y `exactas` se rellenan al construir el catálogo: las primeras
+    comparan por raíz; las segundas, de forma literal (p. ej. entrenador vs entrenar).
+    """
     nombre: str
     descripcion: str
     frases: tuple[str, ...] = ()
@@ -36,6 +41,7 @@ class Intencion:
 
 
 def _construir(intencion: Intencion) -> Intencion:
+    """Normaliza frases y precalcula raíces y literales para clasificar más rápido."""
     return Intencion(
         nombre=intencion.nombre,
         descripcion=intencion.descripcion,

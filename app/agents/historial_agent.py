@@ -13,7 +13,10 @@ from app.services.user_service import UserService
 
 
 class HistorialAgent:
+    """Comparativa mensual del atleta y métricas agregadas (RF47/RF48)."""
+
     def __init__(self):
+        """Inicializa clientes de users, sports y reports."""
         self.user_service = UserService()
         self.sports_service = SportsService()
         self.reports_service = ReportsService()
@@ -23,6 +26,11 @@ class HistorialAgent:
         usuario_id: str,
         authorization: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Compara inscripciones, RPE y planes del mes actual frente al mes anterior.
+
+        También calcula una tendencia (`alza`, `baja`, `mejor_recuperacion` o `estable`)
+        y series simples para gráficos.
+        """
         perfil = await self.user_service.get_user_profile(usuario_id, authorization)
         inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
         analytics = await self.reports_service.eventos_usuario(authorization)
@@ -36,6 +44,7 @@ class HistorialAgent:
         mes_prev_ini = mes_prev_fin.replace(day=1)
 
         def en_rango(fecha_str: Any, ini: date, fin: date) -> bool:
+            """True si la fecha parseable cae entre `ini` y `fin` inclusive."""
             f = self._parse_date(fecha_str)
             return f is not None and ini <= f <= fin
 
@@ -101,6 +110,7 @@ class HistorialAgent:
         usuario_id: str,
         authorization: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Extiende la comparativa con un snapshot del dashboard de la plataforma."""
         comparativa = await self.comparar(usuario_id, authorization)
         dashboard = await self.reports_service.dashboard(authorization=authorization)
         return {
@@ -120,6 +130,7 @@ class HistorialAgent:
         rpe_act: Optional[float],
         rpe_prev: Optional[float],
     ) -> str:
+        """Clasifica la tendencia según delta de inscripciones y media de RPE."""
         if ev_act > ev_prev:
             return "alza"
         if ev_act < ev_prev:
@@ -129,6 +140,7 @@ class HistorialAgent:
         return "estable"
 
     async def _rpe_usuario(self, usuario_id: str) -> list[dict]:
+        """Lee las sesiones RPE del atleta en Mongo (hasta 200). Vacío si no hay DB."""
         db = get_db()
         if db is None:
             return []
@@ -140,6 +152,7 @@ class HistorialAgent:
             return []
 
     async def _planes_usuario(self, usuario_id: str) -> list[dict]:
+        """Lista los `plan_id` de planes guardados del atleta. Vacío si no hay DB."""
         db = get_db()
         if db is None:
             return []
@@ -151,6 +164,7 @@ class HistorialAgent:
             return []
 
     async def _chats_usuario(self, usuario_id: str) -> int:
+        """Cuenta mensajes de chat persistidos del atleta (hasta 20 hilos)."""
         db = get_db()
         if db is None:
             return 0
@@ -164,6 +178,7 @@ class HistorialAgent:
 
     @staticmethod
     def _parse_date(valor: Any) -> Optional[date]:
+        """Convierte un valor ISO (o similar) a `date`; None si no es parseable."""
         if not valor:
             return None
         try:

@@ -29,6 +29,7 @@ async def _sembrar_coleccion(
     clave: str,
     forzar: bool,
 ) -> dict[str, int]:
+    """Inserta documentos por `clave` (upsert); con `forzar` reemplaza los existentes."""
     db = get_db()
     insertados = 0
     actualizados = 0
@@ -53,7 +54,10 @@ async def _sembrar_coleccion(
 
 
 async def sembrar_catalogos(forzar: bool = False) -> dict[str, Any]:
-    """Inserta ejercicios, conocimiento del chatbot y bancos de quiz."""
+    """Inserta ejercicios, conocimiento del chatbot y bancos de quiz si aún no existen.
+
+    Con `forzar=True` reescribe los documentos desde el código. Crea índices al terminar.
+    """
     db = get_db()
     if db is None:
         return {"sembrado": False, "motivo": "MongoDB no disponible"}
@@ -80,6 +84,7 @@ async def sembrar_catalogos(forzar: bool = False) -> dict[str, Any]:
 
 
 async def _crear_indices() -> None:
+    """Crea índices únicos y de retención; un fallo se registra y no aborta el arranque."""
     db = get_db()
     try:
         await db[COL_EJERCICIOS].create_index("id", unique=True)

@@ -17,7 +17,11 @@ async def progreso_comparativa(
     usuario_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
-    """RF48 — alias de GET /api/ai/historial/comparar/{usuario_id}."""
+    """RF48 — comparativa de progreso del atleta (alias de historial/comparar).
+
+    Devuelve el mismo payload que GET /api/ai/historial/comparar/{usuario_id}
+    y añade las marcas `rf` y `alias_de` para el cliente.
+    """
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         result = await agent.comparar(ctx.id, ctx.authorization)

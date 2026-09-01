@@ -14,6 +14,8 @@ router = APIRouter()
 
 
 class RpeRequest(BaseModel):
+    """Cuerpo para registrar el esfuerzo percibido (RPE 0–10) de una sesión."""
+
     usuario_id: Optional[str] = None
     rpe: float = Field(..., ge=0, le=10, description="Perceived exertion 0-10")
     sesion_id: Optional[str] = None
@@ -24,6 +26,11 @@ class RpeRequest(BaseModel):
 async def registrar_rpe(
     request: RpeRequest, authorization: Optional[str] = Header(None)
 ):
+    """RF45 — guarda el RPE post-sesión y sugiere ajuste de carga para la siguiente.
+
+    Persiste el registro en Mongo si hay base disponible. RPE ≥ 8 sugiere bajar
+    volumen; ≤ 3 permite progresar ligeramente.
+    """
     ctx = await resolver_contexto(authorization, request.usuario_id, require_auth=True)
 
     sugerencia = "Mantén el plan."

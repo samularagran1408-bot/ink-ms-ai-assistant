@@ -9,7 +9,13 @@ from app.nlp.texto import normalizar
 
 
 class DeteccionAgent:
+    """Infiere un tipo de discapacidad canónico a partir de texto libre (RF52)."""
+
     def sugerir(self, texto: str) -> dict[str, Any]:
+        """Devuelve una sugerencia de configuración con confianza y opciones.
+
+        Nunca aplica el cambio: `requiere_confirmacion` queda siempre en true.
+        """
         limpio = normalizar(texto or "")
         if not limpio:
             return {

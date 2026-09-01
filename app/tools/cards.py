@@ -63,6 +63,7 @@ def construir_cards(
 
 
 def _lista_mcp(bloque: dict[str, Any]) -> list:
+    """Extrae una lista de ítems del payload MCP (data, content, items, eventos, etc.)."""
     data = bloque.get("data")
     if isinstance(data, list):
         return data
@@ -75,6 +76,7 @@ def _lista_mcp(bloque: dict[str, Any]) -> list:
 
 
 def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convierte un bloque de datos (eventos, deportes, rutina, quiz, etc.) en cards con CTA."""
     out: list[dict[str, Any]] = []
     tool = origen if origen != "raiz" else None
     items = _lista_mcp(bloque)

@@ -145,10 +145,12 @@ class _EmisorEventos:
     """Lista compatible con append() que también emite a la cola SSE."""
 
     def __init__(self, cola: Optional[asyncio.Queue] = None):
+        """Crea el buffer de eventos; si hay `cola`, cada append también se publica ahí."""
         self._items: list[dict[str, Any]] = []
         self._cola = cola
 
     def append(self, ev: dict[str, Any]) -> None:
+        """Añade un evento UI (completa `mensaje` si falta) y lo publica en la cola SSE."""
         if not isinstance(ev, dict):
             return
         if "mensaje" not in ev:
@@ -167,6 +169,7 @@ class _EmisorEventos:
             self._cola.put_nowait(ev)
 
     def __iter__(self):
+        """Itera los eventos ya emitidos, en orden."""
         return iter(self._items)
 
 
@@ -199,7 +202,10 @@ _SISTEMA_TOOLS = (
 
 
 class ChatbotAgent:
+    """Asistente conversacional de InkluSport: clasifica, llama tools y responde (RF46)."""
+
     def __init__(self):
+        """Inicializa LLM, sports, users, historial de conversación y dashboard."""
         self.llm = LLMService()
         self.sports_service = SportsService()
         self.user_service = UserService()
@@ -333,6 +339,12 @@ class ChatbotAgent:
         perfil: Optional[dict[str, Any]] = None,
         limitacion: Optional[str] = None,
     ) -> dict[str, Any]:
+        """Procesa un mensaje del usuario y devuelve la respuesta del asistente.
+
+        Carga el hilo, resuelve escrituras pendientes (Confirmo/Cancelar) o clasifica
+        la intención y elige tool-calling, motor local o LLM. Persiste el turno y,
+        si hay dolor/limitación, adjunta el mapa corporal.
+        """
         historial, cid_efectiva, resumen = await self.conversaciones.cargar_contexto_llm(
             usuario_id, conversacion_id or ""
         )
@@ -414,6 +426,7 @@ class ChatbotAgent:
             yield _evento_ui("estado", "confirmando_accion")
 
             async def _trabajo_pendiente():
+                """Resuelve la escritura pendiente y señala el fin en la cola SSE."""
                 try:
                     res = await self._resolver_pendiente(
                         usuario_id,
@@ -442,6 +455,7 @@ class ChatbotAgent:
                 yield _evento_ui("estado", "consultando_conocimiento")
 
             async def _trabajo_turno():
+                """Clasifica y resuelve el turno emitiendo eventos de herramienta por la cola."""
                 try:
                     res = await self._resolver_turno(
                         usuario_id,
@@ -715,6 +729,7 @@ class ChatbotAgent:
         roles: Optional[list[str]] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
+        """Ejecuta una tool local por nombre: traduce a acción de enriquecimiento y la corre."""
         accion = accion_de_tool(nombre)
         if not accion:
             return f"Herramienta desconocida: {nombre}", {"error": "tool_desconocida"}
@@ -733,6 +748,7 @@ class ChatbotAgent:
         roles: list[str],
         perfil: Optional[dict[str, Any]],
     ) -> str:
+        """Texto de sesión (nombre, discapacidad, roles) para inyectar en el prompt del LLM."""
         nombre = (perfil or {}).get("fullName") or "Usuario"
         disc = (perfil or {}).get("disability") or discapacidad or "no indicada"
         roles_txt = ", ".join(str(r) for r in (roles or [])) or "USUARIO"
@@ -742,6 +758,7 @@ class ChatbotAgent:
         )
 
     def _claves_rol(self, roles: list[str]) -> set[str]:
+        """Normaliza roles del token a claves internas: admin, organizador, entrenador, usuario."""
         claves: set[str] = set()
         for rol in roles or []:
             r = str(rol).upper().replace("ROLE_", "")
@@ -763,6 +780,10 @@ class ChatbotAgent:
         roles: list[str],
         mensaje: str = "",
     ) -> dict[str, Any]:
+        """Rellena el actor de las tools (user_id, trainer_id, filtros) según rol y mensaje.
+
+        Evita que el LLM pida email/ID: el atleta autenticado se inyecta solo.
+        """
         args = dict(args or {})
         claves = self._claves_rol(roles)
         es_admin = "admin" in claves
@@ -799,6 +820,7 @@ class ChatbotAgent:
     async def _definiciones_tools(
         self, roles: list[str], authorization: Optional[str]
     ) -> list[dict[str, Any]]:
+        """Combina tools MCP y locales y deja solo las permitidas para los roles del token."""
         mcp_tools = await listar_tools_openai(authorization)
         locales = [
             t
@@ -819,6 +841,7 @@ class ChatbotAgent:
         roles: list[str],
         perfil: Optional[dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
+        """Despacha una tool: permiso de rol, ejecución local o llamada MCP, con fallback."""
         if nombre not in nombres_permitidos(roles):
             return (
                 f"No tienes permiso para la herramienta {nombre}.",
@@ -857,6 +880,7 @@ class ChatbotAgent:
         roles: list[str],
         pendiente: dict[str, Any],
     ) -> dict[str, Any]:
+        """Cierra una escritura pendiente: cancelar, pedir confirmación o ejecutar la tool."""
         if es_cancelacion(mensaje):
             return {
                 "respuesta": "Cancelado. No he ejecutado esa acción.",
@@ -916,6 +940,7 @@ class ChatbotAgent:
         historial: list[dict[str, Any]],
         datos: dict[str, Any],
     ) -> Optional[str]:
+        """Pide al LLM un cierre en español a partir de los datos que devolvieron las tools."""
         return await self.llm.texto_mensajes(
             [
                 {"role": "system", "content": system_prompt(discapacidad)},
@@ -949,6 +974,7 @@ class ChatbotAgent:
         roles: Optional[list[str]] = None,
         perfil: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
+        """Responde con conocimiento local (plantillas + herramienta) según la intención."""
         conocimiento = await obtener_conocimiento(intencion) or {}
         adaptaciones = conocimiento.get("adaptaciones") or {}
         especifica = adaptaciones.get(discapacidad)
@@ -1067,6 +1093,7 @@ class ChatbotAgent:
         authorization: Optional[str],
         historial: list[dict[str, str]],
     ) -> dict[str, Any]:
+        """Fallback cuando no hay intención clara: LLM, aproximación o plantilla de no entendido."""
         conversacional = await self._responder_conversacional(
             mensaje,
             discapacidad,
@@ -1176,6 +1203,7 @@ class ChatbotAgent:
         authorization: Optional[str],
         perfil: Optional[dict[str, Any]] = None,
     ) -> str:
+        """Resume catálogo vivo (deportes, discapacidades, eventos) para el prompt conversacional."""
         try:
             deportes = await self.sports_service.get_deportes_activos(authorization)
             eventos = await self.sports_service.get_eventos_activos(authorization)
@@ -1206,6 +1234,7 @@ class ChatbotAgent:
         return "\n".join(lineas) or "- Catálogo vacío."
 
     def _rotar(self, usuario_id: str, intencion: str, variantes: list[str]) -> str:
+        """Elige la siguiente variante de plantilla para no repetir la misma frase al usuario."""
         if not variantes:
             return NO_ENTENDIDO[0]
         clave = (usuario_id, intencion)
@@ -1219,6 +1248,7 @@ class ChatbotAgent:
         mensaje: str,
         limitacion: Optional[str],
     ) -> dict[str, Any]:
+        """Adjunta el mapa corporal si el mensaje o la limitación hablan de dolor/lesión."""
         datos = resultado.get("datos") if isinstance(resultado.get("datos"), dict) else {}
         previo = datos.get("cuerpo") if isinstance(datos.get("cuerpo"), dict) else None
         if not debe_dibujar(mensaje, limitacion, resultado.get("intencion")) and not previo:
@@ -1249,6 +1279,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **extra: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Genera el mapa corporal de la limitación reportada y un texto de acompañamiento."""
         args = extra.get("args") if isinstance(extra.get("args"), dict) else {}
         limitacion = str(args.get("limitacion") or mensaje or "")
         mapa = mapa_corporal(mensaje, limitacion)
@@ -1279,6 +1310,7 @@ class ChatbotAgent:
         perfil: Optional[dict[str, Any]] = None,
         args: Optional[dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
+        """Despacha la acción de enriquecimiento (eventos, rutina, perfil, etc.) al handler concreto."""
         acciones = {
             "eventos": self._datos_eventos,
             "deportes": self._datos_deportes,
@@ -1332,6 +1364,7 @@ class ChatbotAgent:
     async def _datos_eventos(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
     ) -> tuple[str, dict[str, Any]]:
+        """Lista eventos activos priorizando los compatibles con la discapacidad del perfil."""
         eventos = await self.sports_service.get_eventos_activos(authorization)
         if not eventos:
             return (
@@ -1386,6 +1419,7 @@ class ChatbotAgent:
     async def _datos_deportes(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
     ) -> tuple[str, dict[str, Any]]:
+        """Resume el catálogo de deportes activos (nombre, dificultad, material)."""
         deportes = await self.sports_service.get_deportes_activos(authorization)
         if not deportes:
             return (
@@ -1414,6 +1448,7 @@ class ChatbotAgent:
     async def _datos_discapacidades(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
     ) -> tuple[str, dict[str, Any]]:
+        """Lista las categorías de discapacidad registradas en sports."""
         catalogo = await self.sports_service.get_discapacidades_activas(authorization)
         if not catalogo:
             return "", {}
@@ -1434,6 +1469,7 @@ class ChatbotAgent:
     async def _datos_adaptaciones(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
     ) -> tuple[str, dict[str, Any]]:
+        """Recoge adaptaciones deporte–discapacidad relevantes para el perfil."""
         deportes = await self.sports_service.get_deportes_activos(authorization)
         encontradas = []
         for deporte in deportes[:6]:
@@ -1473,6 +1509,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **_kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Genera una sesión corta del catálogo y la resume por bloques para el chat."""
         catalogo = await obtener_catalogo_ejercicios()
         rutina = generar_rutina(
             discapacidad=discapacidad,
@@ -1517,6 +1554,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **_kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Selecciona unos cuantos ejercicios adaptados al perfil y al objetivo del mensaje."""
         catalogo = await obtener_catalogo_ejercicios()
         rutina = generar_rutina(
             discapacidad=discapacidad,
@@ -1537,6 +1575,7 @@ class ChatbotAgent:
     async def _datos_quiz(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
     ) -> tuple[str, dict[str, Any]]:
+        """Informa tamaño de los bancos de quiz y umbrales de organizador/entrenador."""
         texto = (
             f"Tengo {len(BANCOS['ORGANIZADOR'])} preguntas para organizador y "
             f"{len(BANCOS['ENTRENADOR'])} para entrenador, y cada quiz se arma con una "
@@ -1557,6 +1596,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Lee el perfil de la sesión y lo presenta (nombre, discapacidad, roles, bio)."""
         perfil = kwargs.get("perfil") or await self.user_service.get_my_profile(authorization)
         if not perfil:
             perfil = await self.user_service.get_user_profile(usuario_id, authorization)
@@ -1593,6 +1633,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Construye el dashboard del atleta (o de otro usuario si es admin) y lo resume en texto."""
         objetivo_id = usuario_id
         perfil = kwargs.get("perfil")
         roles = kwargs.get("roles") or []
@@ -1621,6 +1662,7 @@ class ChatbotAgent:
         return texto, {"vista": dash.get("vista"), "estadisticas": dash.get("vista")}
 
     def _proximo_sabado(self) -> str:
+        """Fecha ISO del próximo sábado (si hoy es sábado, el de la semana siguiente)."""
         hoy = date.today()
         dias = (5 - hoy.weekday()) % 7
         if dias == 0:
@@ -1635,6 +1677,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Propone un evento inclusivo y deja la tool `crear_evento` pendiente de confirmación."""
         deportes = await self.sports_service.get_deportes_activos(authorization)
         if not deportes:
             return (
@@ -1693,6 +1736,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Propone dar de alta un deporte en el catálogo y pide confirmación para crearlo."""
         idea = (mensaje or "Deporte inclusivo").strip() or "Deporte inclusivo"
         if len(idea) < 3:
             idea = "Deporte inclusivo"
@@ -1726,6 +1770,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Arma una rutina y deja `crear_rutina` pendiente para publicarla como entrenador."""
         perfil = kwargs.get("perfil") or {}
         texto_rutina, datos_rutina = await self._datos_rutina(
             usuario_id, discapacidad, authorization, mensaje
@@ -1769,6 +1814,7 @@ class ChatbotAgent:
         usadas: list[str],
         roles: list[str],
     ) -> Optional[tuple[str, dict[str, Any]]]:
+        """Si admin/staff pidió PDF o listar usuarios y el LLM no lo hizo, fuerza esa tool."""
         claves = self._claves_rol(roles)
         es_admin = "admin" in claves
         es_staff = bool(claves & {"admin", "organizador"})
@@ -1803,6 +1849,7 @@ class ChatbotAgent:
         historial: list[dict[str, Any]],
         eventos: Optional[Any],
     ) -> dict[str, Any]:
+        """Ejecuta la tool obligatoria que faltó y resintetiza la respuesta con esos datos."""
         usadas = [h for h in (resultado.get("herramientas_usadas") or []) if h]
         forzar = self._tool_obligatoria(intencion, mensaje, usadas, roles)
         if not forzar:
@@ -1840,6 +1887,7 @@ class ChatbotAgent:
         args: dict[str, Any],
         mensaje: str = "",
     ) -> dict[str, Any]:
+        """Filtra el listado MCP de usuarios a activos, inactivos o todos según args/mensaje."""
         solo_inactivos = es_verdadero(args.get("solo_inactivos")) or pide_inactivos(mensaje)
         solo_activos = (
             not solo_inactivos
@@ -1872,6 +1920,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Prepara la tarjeta de descarga PDF (dashboard o auditoría) según rol y mensaje."""
         roles = kwargs.get("roles") or []
         claves = self._claves_rol(roles)
         if not (claves & {"admin", "organizador"}):
@@ -1912,6 +1961,7 @@ class ChatbotAgent:
         mensaje: str = "",
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
+        """Lista usuarios de la plataforma (solo admin), filtrando activos o inactivos si se pide."""
         roles = kwargs.get("roles") or []
         if "admin" not in self._claves_rol(roles):
             return ("Solo un administrador puede listar usuarios de la plataforma.", {})

@@ -213,6 +213,7 @@ def _ej(
     adaptaciones: dict[str, str] | None = None,
     seguridad: str = "",
 ) -> dict[str, Any]:
+    """Construye un ejercicio del catálogo con defaults de material, discapacidades y seguridad."""
     return {
         "id": id,
         "nombre": nombre,
@@ -580,4 +581,5 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
 
 
 def ejercicio_por_id(id_ejercicio: str) -> dict[str, Any] | None:
+    """Busca un ejercicio del catálogo embebido por su `id`; None si no existe."""
     return next((e for e in CATALOGO_EJERCICIOS if e["id"] == id_ejercicio), None)
