@@ -12,11 +12,14 @@ from app.data.ejercicios import CATALOGO_EJERCICIOS
 from app.data.quiz_banco import BANCOS
 from app.database.mongodb import get_db
 from app.database.repositorio import (
+    COL_ALERTAS,
     COL_CONOCIMIENTO,
     COL_CONVERSACIONES,
     COL_EJERCICIOS,
+    COL_PLANES,
     COL_QUIZ,
     COL_QUIZZES,
+    COL_SESIONES_RPE,
 )
 
 
@@ -93,5 +96,11 @@ async def _crear_indices() -> None:
             [("usuario_id", 1), ("estado", 1), ("ultima_interaccion", -1)],
             name="usuario_estado_reciente",
         )
+        await db[COL_CONVERSACIONES].create_index("ultima_interaccion", name="chat_retencion")
+        await db[COL_QUIZZES].create_index("creado_en", name="quiz_creado_retencion")
+        await db[COL_QUIZZES].create_index("evaluado_en", name="quiz_evaluado_retencion")
+        await db[COL_ALERTAS].create_index("creado_en", name="alertas_retencion")
+        await db[COL_PLANES].create_index("creado_en", name="planes_retencion")
+        await db[COL_SESIONES_RPE].create_index("fecha", name="rpe_retencion")
     except Exception as exc:
         print(f"No se pudieron crear todos los índices: {exc}")

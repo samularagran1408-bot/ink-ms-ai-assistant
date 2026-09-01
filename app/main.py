@@ -15,6 +15,7 @@ from app.database.mongodb import (
     estado as estado_mongo,
     ocultar_credenciales,
 )
+from app.database.retencion import bucle_retencion
 from app.database.semilla import sembrar_catalogos
 from app.nlp.intenciones import INTENCIONES
 from app.routers import (
@@ -57,9 +58,11 @@ async def lifespan(app: FastAPI):
     )
 
     calentamiento = asyncio.create_task(_precalentar_llm())
+    retencion = asyncio.create_task(bucle_retencion())
 
     yield
 
+    retencion.cancel()
     calentamiento.cancel()
     await close_mongo_connection()
     print("Desconectado de MongoDB")
