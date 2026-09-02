@@ -13,6 +13,12 @@ logs/
 .vscode/
 .DS_Store
 
+# Venv local (Python 3.12 para CrewAI)
+.venv/
+
+# Store fake del crew: no versionar datos de demo
+app/crew/sandbox_data.json
+
 # Credenciales
 .env
 application-local.yml

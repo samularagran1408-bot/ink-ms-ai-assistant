@@ -9,3 +9,5 @@ mcp>=2.0.0
 python-multipart>=0.0.9
 pyjwt>=2.9.0
 cryptography>=43.0.0
+# 0.x = taller 01/04/05. La 1.x pide mcp~=1.28 y rompe el cliente Streamable HTTP 2.x.
+crewai>=0.121.0,<1.0

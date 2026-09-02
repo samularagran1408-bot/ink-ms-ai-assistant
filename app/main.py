@@ -24,6 +24,7 @@ from app.routers import (
     alertas,
     chat,
     competencia,
+    crew,
     dashboard,
     deportes,
     deteccion,
@@ -152,6 +153,7 @@ _fastapi.include_router(fatiga.router, prefix="/api/ai/fatiga", tags=["Fatiga RF
 _fastapi.include_router(voz.router, prefix="/api/ai/voz", tags=["Voz RF46"])
 _fastapi.include_router(quiz.router, prefix="/api/ai/quiz", tags=["Quices verificación"])
 _fastapi.include_router(quiz.router, prefix="/api/ai", tags=["Quices (alias)"])
+_fastapi.include_router(crew.router, prefix="/api/ai/crew", tags=["CrewAI"])
 
 
 @_fastapi.get("/api/ai/health")
@@ -166,7 +168,7 @@ async def health_check():
         "agents": [
             "chatbot", "rutinas", "planes", "competencia", "recomendacion",
             "deportes", "riesgo", "historial", "dashboard", "alertas",
-            "deteccion", "fatiga", "voz", "quiz",
+            "deteccion", "fatiga", "voz", "quiz", "crew",
         ],
         "chat_tools": {
             "estilo": "openai_tools",
