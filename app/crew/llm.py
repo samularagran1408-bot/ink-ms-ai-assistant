@@ -46,7 +46,7 @@ def candidatos_llm() -> list[Optional[str]]:
 
 
 def llm_saturado(exc: BaseException) -> bool:
-    """True si OpenRouter/LiteLLM rechazó el modelo (429, sin endpoint, no-free)."""
+    """True si hay que probar el siguiente modelo (cuota, slug muerto o respuesta vacía)."""
     texto = str(exc).lower()
     return any(
         t in texto
@@ -56,6 +56,8 @@ def llm_saturado(exc: BaseException) -> bool:
             "rate limit",
             "no endpoints found",
             "unavailable for free",
+            "invalid response from llm",
+            "none or empty",
         )
     )
 

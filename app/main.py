@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.crew.enrutar import DOMINIOS as CREW_DOMINIOS
+from app.crew.politica import descripcion_escritura
 from app.data.ejercicios import CATALOGO_EJERCICIOS
 from app.data.quiz_banco import BANCOS
 from app.database.mongodb import (
@@ -176,6 +178,14 @@ async def health_check():
             "fallback": "motor_local",
         },
         "mcp": descripcion_protocolo(),
+        "crew": {
+            "run": "POST /api/ai/crew/run",
+            "catalogo": "GET /api/ai/crew/dominios",
+            "dominios": list(CREW_DOMINIOS),
+            "auto": True,
+            "timeout_segundos": settings.CREW_TIMEOUT_SEGUNDOS,
+            "writes": descripcion_escritura(),
+        },
         "rf_cubiertos": {
             "RF41": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar) — Ideal",
             "RF42": "POST /api/ai/riesgo/lesiones/{userId} (+ /riesgo/evaluar) — Ideal",

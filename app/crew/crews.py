@@ -84,7 +84,8 @@ def crew_automatizado(llm: Optional[LLM] = None) -> Crew:
             "igual: devolverá pendiente_confirmacion. Si el mensaje es Confirmo, "
             "pasa confirmacion='Confirmo'. Prohibido: MCP de escritura, quiz, dashboard."
         ),
-        "Informe via_sandbox=true. Nunca digas que cambió MySQL o Sports real.",
+        "Informe via_sandbox=true. pendiente_confirmacion=true si faltó Confirmo. "
+        "Nunca digas que cambió MySQL o Sports real.",
     )
 
 
@@ -138,7 +139,7 @@ def run_dominio(
             ultimo = exc
             if llm_saturado(exc) and i < len(candidatos) - 1:
                 print(
-                    f"👉 [LLM] saturado o sin endpoint; pruebo el siguiente "
+                    f" [LLM] saturado o sin endpoint; pruebo el siguiente "
                     f"({i + 2}/{len(candidatos)})",
                     flush=True,
                 )
@@ -159,24 +160,33 @@ def run_investigacion(mensaje: str, authorization: Optional[str] = None) -> Any:
 
 def resultado_a_informe(resultado: Any) -> InformeCrew:
     """Normaliza la salida del kickoff al JSON del front."""
+    texto = str(getattr(resultado, "raw", None) or resultado)
+    pendiente_en_texto = "pendiente_confirmacion" in texto.lower()
+
     pydantic = getattr(resultado, "pydantic", None)
     if isinstance(pydantic, InformeCrew):
-        return pydantic
-    if pydantic is not None:
-        return InformeCrew.model_validate(pydantic)
-    bruto = getattr(resultado, "raw", None) or str(resultado)
-    texto = str(bruto)
-    via_mcp = '"via": "mcp"' in texto or "via_mcp" in texto
-    via_sandbox = '"via": "sandbox"' in texto or "via_sandbox" in texto
-    fuente = "sandbox" if via_sandbox else ("mcp" if via_mcp else "agente")
-    return InformeCrew(
-        resumen=texto[:2000],
-        tools_usadas=[],
-        via_mcp=via_mcp,
-        via_sandbox=via_sandbox,
-        fuente_tools=fuente,
-        hallazgos=texto[:4000],
-    )
+        informe = pydantic
+    elif pydantic is not None:
+        informe = InformeCrew.model_validate(pydantic)
+    else:
+        via_mcp = '"via": "mcp"' in texto or "via_mcp" in texto
+        via_sandbox = '"via": "sandbox"' in texto or "via_sandbox" in texto or pendiente_en_texto
+        fuente = "sandbox" if via_sandbox else ("mcp" if via_mcp else "agente")
+        informe = InformeCrew(
+            resumen=texto[:2000],
+            tools_usadas=[],
+            via_mcp=via_mcp,
+            via_sandbox=via_sandbox,
+            fuente_tools=fuente,
+            hallazgos=texto[:4000],
+            pendiente_confirmacion=pendiente_en_texto,
+        )
+
+    if pendiente_en_texto:
+        informe = informe.model_copy(update={"pendiente_confirmacion": True, "via_sandbox": True})
+    if informe.pendiente_confirmacion and not informe.via_sandbox:
+        informe = informe.model_copy(update={"pendiente_confirmacion": False})
+    return informe
 
 
 if __name__ == "__main__":
@@ -196,7 +206,7 @@ if __name__ == "__main__":
     try:
         resultado = run_dominio(dominio, pregunta)
     except RuntimeError as exc:
-        print(f"👉 {exc}")
+        print(f" {exc}")
         sys.exit(1)
     print("--- resultado ---")
     print(resultado)

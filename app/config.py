@@ -89,6 +89,12 @@ class Settings:
     LLM_TIMEOUT = _int("LLM_TIMEOUT", 120)
     LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 800)
 
+    # Kickoff CrewAI: varias iteraciones de LLM + tools. El front debe esperar esto.
+    CREW_TIMEOUT_SEGUNDOS = _int("CREW_TIMEOUT_SEGUNDOS", 180)
+
+    # Las mutaciones del crew son SIEMPRE sandbox. CREW_WRITE_MODE=mcp se ignora
+    # (ver app.crew.politica). El chat sigue escribiendo vía MCP con Confirmo.
+
     # Tras un fallo del proveedor se deja de intentar durante este tiempo, para
     # que el chat no espere el timeout completo en cada petición.
     LLM_COOLDOWN_SEGUNDOS = _int("LLM_COOLDOWN_SEGUNDOS", 60)

@@ -13,7 +13,7 @@ from app.crew.tools_mcp_read import (
     TOOLS_CONSULTA_MCP,
     TOOLS_INVESTIGACION,
 )
-from app.crew.tools_sandbox import TOOLS_SANDBOX
+from app.crew.politica import tools_escritura_crew
 
 
 def agente_investigacion(llm: Optional[LLM] = None) -> Agent:
@@ -91,7 +91,7 @@ def agente_automatizado(llm: Optional[LLM] = None) -> Agent:
             "Sports :3003. Estas mutaciones no afectan la plataforma real. "
             "Nunca uses tools MCP de escritura. Español claro."
         ),
-        tools=list(TOOLS_SANDBOX),
+        tools=tools_escritura_crew(),
         llm=llm or llm_crew(),
         verbose=True,
         allow_delegation=False,
