@@ -13,6 +13,7 @@ _authorization: ContextVar[Optional[str]] = ContextVar("crew_auth", default=None
 _usuario_id: ContextVar[Optional[str]] = ContextVar("crew_uid", default=None)
 _discapacidad: ContextVar[str] = ContextVar("crew_disc", default="general")
 _confirmacion: ContextVar[str] = ContextVar("crew_confirma", default="")
+_lecturas: ContextVar[Optional[dict[str, Any]]] = ContextVar("crew_lecturas", default=None)
 
 
 def set_sesion(
@@ -26,6 +27,7 @@ def set_sesion(
     _usuario_id.set(usuario_id)
     _discapacidad.set(discapacidad or "general")
     _confirmacion.set("Confirmo" if es_confirmacion(mensaje or "") else "")
+    _lecturas.set({})
 
 
 def authorization() -> Optional[str]:
@@ -46,6 +48,20 @@ def discapacidad() -> str:
 def confirmacion_sesion() -> str:
     """«Confirmo» si el mensaje del usuario autoriza (estilo writes.py)."""
     return _confirmacion.get() or ""
+
+
+def registrar_lectura(nombre: str, datos: dict[str, Any]) -> None:
+    """Guarda el JSON de una tool para cards y texto del chat."""
+    caja = _lecturas.get()
+    if caja is None:
+        caja = {}
+        _lecturas.set(caja)
+    caja[nombre] = datos
+
+
+def lecturas_sesion() -> dict[str, Any]:
+    """Copia de los payloads MCP/local de este kickoff."""
+    return dict(_lecturas.get() or {})
 
 
 def log_taller(msg: str) -> None:

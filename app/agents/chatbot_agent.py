@@ -68,6 +68,7 @@ _CON_HERRAMIENTA = frozenset({
 _ESTADOS_UI = {
     "analizando_intencion": "Entendiendo tu mensaje…",
     "agente_con_tools": "Decidiendo qué consultar…",
+    "crew": "Consultando con CrewAI…",
     "confirmando_accion": "Procesando tu confirmación…",
     "redactando_respuesta": "Redactando la respuesta…",
     "consultando_conocimiento": "Consultando el conocimiento de InkluSport…",
@@ -238,6 +239,21 @@ class ChatbotAgent:
                 roles=roles or [], perfil=perfil,
             )
 
+        # 1b) Dominio CrewAI (consulta, quiz, plan, investigación). Altas reales no.
+        if settings.CHAT_ORQUESTA_CREW:
+            from app.crew.puente_chat import ejecutar_crew_en_chat
+
+            via_crew = await ejecutar_crew_en_chat(
+                mensaje=mensaje,
+                roles=roles or [],
+                authorization=authorization,
+                usuario_id=usuario_id,
+                discapacidad=clave_discapacidad,
+                eventos=eventos,
+            )
+            if via_crew:
+                return via_crew
+
         # 2) Tool-calling LLM (estilo MCP) cuando está habilitado
         if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible:
             con_tools = await self._responder_con_tools(
@@ -385,7 +401,7 @@ class ChatbotAgent:
             resultado["terminos_detectados"] = clasificacion["terminos"]
 
         resultado["conversacion_id"] = conversacion_id
-        resultado["agente"] = "inklusport-profesional"
+        resultado["agente"] = resultado.get("agente") or "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
         resultado["historial_con_resumen"] = bool(resumen)
         resultado = self._adjuntar_cuerpo(resultado, mensaje, limitacion)
@@ -445,7 +461,20 @@ class ChatbotAgent:
             clasificacion = clasificar(mensaje)
             intencion = clasificacion["nombre"]
 
-            if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
+            if settings.CHAT_ORQUESTA_CREW:
+                from app.crew.puente_chat import enrutado_chat_crew
+
+                if enrutado_chat_crew(mensaje, roles):
+                    yield _evento_ui("estado", "crew")
+                elif settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
+                    yield _evento_ui("estado", "agente_con_tools")
+                elif intencion in _CON_HERRAMIENTA:
+                    yield _evento_ui("herramienta", intencion, "ejecutando")
+                elif self.llm.disponible and intencion not in _SOCIAL:
+                    yield _evento_ui("estado", "redactando_respuesta")
+                else:
+                    yield _evento_ui("estado", "consultando_conocimiento")
+            elif settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
                 yield _evento_ui("estado", "agente_con_tools")
             elif intencion in _CON_HERRAMIENTA:
                 yield _evento_ui("herramienta", intencion, "ejecutando")
@@ -503,7 +532,7 @@ class ChatbotAgent:
             raise RuntimeError("El agente no devolvió respuesta")
 
         resultado["conversacion_id"] = conversacion_id
-        resultado["agente"] = "inklusport-profesional"
+        resultado["agente"] = resultado.get("agente") or "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
         resultado["historial_con_resumen"] = bool(resumen)
         resultado = self._adjuntar_cuerpo(resultado, mensaje, limitacion)

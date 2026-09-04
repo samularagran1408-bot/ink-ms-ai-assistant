@@ -185,6 +185,7 @@ async def health_check():
             "auto": True,
             "timeout_segundos": settings.CREW_TIMEOUT_SEGUNDOS,
             "writes": descripcion_escritura(),
+            "orquesta_chat": settings.CHAT_ORQUESTA_CREW,
         },
         "rf_cubiertos": {
             "RF41": "POST /api/ai/ejercicios/adaptar (+ alias /rutinas/adaptar) — Ideal",

@@ -16,6 +16,7 @@ from app.crew.ctx import (
     correr_async,
     discapacidad,
     log_taller,
+    registrar_lectura,
     usuario_id,
 )
 from app.data.quiz_banco import BANCO_ENTRENADOR, BANCO_ORGANIZADOR
@@ -28,7 +29,15 @@ def _texto(datos: dict[str, Any]) -> str:
 
 
 def _local(accion: str, data: Any) -> dict[str, Any]:
-    return {"success": True, "via": "agente", "fuente": "agente", "accion": accion, "data": data}
+    payload = {
+        "success": True,
+        "via": "agente",
+        "fuente": "agente",
+        "accion": accion,
+        "data": data,
+    }
+    registrar_lectura(accion, payload)
+    return payload
 
 
 @tool("info_quiz")

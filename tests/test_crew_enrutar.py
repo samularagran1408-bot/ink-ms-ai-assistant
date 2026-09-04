@@ -187,6 +187,127 @@ def test_mcp_read_rechaza_crear_evento():
     assert "escritura" in datos["error"]
 
 
+def test_chat_orquesta_consulta_no_saludo_ni_alta():
+    """El puente del chat usa crew en eventos; no en Hola ni en crear evento."""
+    from app.crew.puente_chat import enrutado_chat_crew
+
+    consulta = enrutado_chat_crew("Recomiéndame eventos", ["USUARIO"])
+    assert consulta is not None
+    assert consulta.dominio == "consulta"
+    assert enrutado_chat_crew("Hola", ["USUARIO"]) is None
+    assert enrutado_chat_crew("Crea un evento Copa el 2026-09-15", ["ADMIN"]) is None
+    assert enrutado_chat_crew("¿Cuántos usuarios hay?", ["USUARIO"]) is None
+
+
+def test_texto_para_usuario_rechaza_meta_de_taller():
+    """El widget no debe pintar 'Análisis MCP/sandbox' como respuesta."""
+    from app.crew.puente_chat import herramientas_reales, texto_para_usuario
+
+    informe = InformeCrew(
+        resumen=(
+            "Análisis completo de la interacción con herramientas MCP y sandbox "
+            "para extraer información relevante."
+        ),
+        tools_usadas=["MODEL_CONTEXT_PROTOCOL", "SANDBOX_ENVIRONMENT", "listar_eventos_disponibles"],
+        via_mcp=True,
+        via_sandbox=False,
+        fuente_tools="mcp",
+        hallazgos="Natación el 2026-09-10, 8 cupos. Fútbol sala el 2026-09-12, 4 cupos.",
+    )
+    texto = texto_para_usuario(informe)
+    assert texto is not None
+    assert "Natación" in texto
+    assert "MCP" not in texto
+    assert herramientas_reales(informe.tools_usadas) == ["listar_eventos_disponibles"]
+
+
+def test_texto_para_usuario_todo_meta_es_none():
+    """Si CrewAI solo habla de protocolos, el chat cae al motor local."""
+    from app.crew.puente_chat import texto_para_usuario
+
+    informe = InformeCrew(
+        resumen="Análisis completo de la interacción con herramientas MCP y sandbox.",
+        tools_usadas=["mcp"],
+        via_mcp=True,
+        via_sandbox=True,
+        fuente_tools="sandbox",
+        hallazgos="via_mcp y Model Context Protocol.",
+    )
+    assert texto_para_usuario(informe) is None
+
+
+def test_lecturas_mcp_arman_texto_y_cards():
+    """Aunque el LLM hable de MCP, los eventos reales van al widget."""
+    from app.crew.enrutar import Enrutado
+    from app.crew.puente_chat import empaquetar_chat
+    from app.tools.cards import construir_cards
+
+    informe = InformeCrew(
+        resumen="Análisis completo de la interacción con herramientas MCP y sandbox.",
+        tools_usadas=["MODEL_CONTEXT_PROTOCOL"],
+        via_mcp=True,
+        fuente_tools="mcp",
+        hallazgos="via_mcp",
+    )
+    lecturas = {
+        "listar_eventos_disponibles": {
+            "success": True,
+            "via": "mcp",
+            "data": [
+                {
+                    "id": "e1",
+                    "name": "Copa silla",
+                    "sportName": "Baloncesto",
+                    "eventDate": "2026-09-10",
+                    "availableCapacity": 8,
+                },
+                {
+                    "id": "e2",
+                    "name": "Sin cupo",
+                    "eventDate": "2026-09-11",
+                    "availableCapacity": 0,
+                },
+            ],
+        }
+    }
+    ruta = Enrutado(dominio="consulta", origen="auto", intencion="eventos", confianza=0.8)
+    paquete = empaquetar_chat(ruta, informe, lecturas)
+    assert paquete is not None
+    assert "Copa silla" in paquete["respuesta"]
+    assert "Sin cupo" not in paquete["respuesta"]
+    assert "8 cupos" in paquete["respuesta"]
+    assert "MCP" not in paquete["respuesta"]
+    assert paquete["herramientas_usadas"] == ["listar_eventos_disponibles"]
+    cards = construir_cards(paquete["datos"], paquete["herramientas_usadas"])
+    titulos = [c["titulo"] for c in cards]
+    assert "Copa silla" in titulos
+    assert "Sin cupo" not in titulos
+    copa = next(c for c in cards if c["titulo"] == "Copa silla")
+    assert any("8 cupos" in str(x) for x in copa.get("meta") or [])
+
+
+def test_consulta_eventos_sin_tool_cae_a_local():
+    """Sin JSON de eventos no se publica prosa suelta: el motor local consulta Sports."""
+    from app.crew.enrutar import Enrutado
+    from app.crew.puente_chat import empaquetar_chat
+
+    informe = InformeCrew(
+        resumen="Hay varios eventos disponibles en la plataforma.",
+        hallazgos="hay eventos",
+    )
+    ruta = Enrutado(dominio="consulta", origen="auto", intencion="eventos", confianza=0.9)
+    assert empaquetar_chat(ruta, informe, {}) is None
+
+
+def test_consulta_tiene_eventos_disponibles():
+    """Cupos / sin lista de espera usan listar_eventos_disponibles en consulta."""
+    from app.crew.tools_mcp_read import TOOLS_CONSULTA_MCP
+
+    nombres = {getattr(t, "name", None) or getattr(t, "__name__", "") for t in TOOLS_CONSULTA_MCP}
+    assert "listar_eventos_disponibles" in nombres
+    assert "listar_eventos" in nombres
+
+
 def _ejecutar_todo() -> int:
     """Corre todas las test_* de este módulo y devuelve 1 si alguna falla."""
     pruebas = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

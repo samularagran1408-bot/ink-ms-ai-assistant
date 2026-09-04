@@ -92,6 +92,10 @@ class Settings:
     # Kickoff CrewAI: varias iteraciones de LLM + tools. El front debe esperar esto.
     CREW_TIMEOUT_SEGUNDOS = _int("CREW_TIMEOUT_SEGUNDOS", 180)
 
+    # El chat flotante orquesta CrewAI en consulta/quiz/plan/investigación.
+    # false = comportamiento anterior (solo tool-calling + motor local).
+    CHAT_ORQUESTA_CREW = _bool("CHAT_ORQUESTA_CREW", True)
+
     # Las mutaciones del crew son SIEMPRE sandbox. CREW_WRITE_MODE=mcp se ignora
     # (ver app.crew.politica). El chat sigue escribiendo vía MCP con Confirmo.
 

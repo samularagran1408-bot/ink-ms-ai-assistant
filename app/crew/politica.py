@@ -1,11 +1,8 @@
 """Política de escritura de InkluSport.
 
-CrewAI (página Crew IA) NUNCA muta Users :3002 ni Sports :3003.
-Toda alta/baja/bloqueo del crew va al store fake (via=sandbox) y exige Confirmo.
-
-El chat (POST /api/ai/chat) SÍ puede llamar tools MCP de escritura, también
-tras Confirmo. Son dos vías a propósito: sandbox para el taller / demos;
-MCP real para el producto.
+CrewAI NUNCA muta Users :3002 ni Sports :3003. El store sandbox exige Confirmo.
+El chat orquesta CrewAI en lecturas/quiz/plan; las altas reales van por MCP
+del chat, también con Confirmo.
 
 CREW_WRITE_MODE en .env se ignora si no es sandbox: no hay interruptor a MCP.
 """

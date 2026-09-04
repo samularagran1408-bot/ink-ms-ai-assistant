@@ -25,9 +25,10 @@ def agente_investigacion(llm: Optional[LLM] = None) -> Agent:
             "agregados usando solo tools MCP de lectura. No inventar cifras."
         ),
         backstory=(
-            "Eres el analista de datos de InkluSport. Consultas el servidor MCP "
-            "(via='mcp'). No creas eventos, no bloqueas usuarios, no preparas "
-            "quiz ni planes de competencia, y no respondes quién soy. Español preciso."
+            "Eres el analista de datos de InkluSport. Respondes con cifras y "
+            "listados reales. Al usuario no le expliques protocolos ni sandbox. "
+            "No creas eventos, no bloqueas usuarios, no preparas quiz ni planes "
+            "de competencia, y no respondes quién soy. Español preciso."
         ),
         tools=list(TOOLS_INVESTIGACION),
         llm=llm or llm_crew(),
@@ -108,9 +109,10 @@ def agente_consulta(llm: Optional[LLM] = None) -> Agent:
             "rutinas para esa persona. No hagas dashboard global ni quiz ni CRUD."
         ),
         backstory=(
-            "Eres el asesor del deportista (estilo agente usuario). Lees MCP "
-            "(via='mcp') y tools locales (fuente agente). No bloquees, no admin. "
-            "Respondes en español, breve."
+            "Eres el asesor del deportista. Consultas perfil, inscripciones y "
+            "eventos reales. Al usuario le hablas de nombres, fechas y cupos; "
+            "nunca de protocolos, MCP ni sandbox. No bloquees, no admin. "
+            "Español, breve."
         ),
         tools=list(TOOLS_CONSULTA_MCP) + list(TOOLS_CONSULTA_LOCAL),
         llm=llm or llm_crew(),

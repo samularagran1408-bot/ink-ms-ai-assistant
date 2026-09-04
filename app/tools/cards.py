@@ -38,6 +38,7 @@ def construir_cards(
         "plan",
         "analisis_base",
         "cuerpo",
+        "crew",
     }
     for clave, payload in list(datos.items()):
         if clave in skip:
@@ -68,7 +69,7 @@ def _lista_mcp(bloque: dict[str, Any]) -> list:
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        for clave in ("content", "items", "eventos", "events", "deportes", "sports"):
+        for clave in ("content", "items", "eventos", "events", "deportes", "sports", "recomendaciones"):
             valor = data.get(clave)
             if isinstance(valor, list):
                 return valor
@@ -96,12 +97,15 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
     for ev in bloque.get("eventos") or []:
         if not isinstance(ev, dict):
             continue
-        titulo = str(ev.get("nombre") or ev.get("name") or "Evento")
+        titulo = str(ev.get("nombre") or ev.get("name") or ev.get("evento") or "Evento")
         deporte = ev.get("deporte") or ev.get("sportName") or ""
         fecha = ev.get("fecha") or ev.get("eventDate") or ""
-        meta = [x for x in (deporte, fecha, ev.get("ubicacion")) if x]
-        if ev.get("cupos_disponibles") is not None:
-            meta.append(f"{ev['cupos_disponibles']} cupos")
+        meta = [x for x in (deporte, fecha, ev.get("ubicacion") or ev.get("location")) if x]
+        cupos = ev.get("cupos_disponibles")
+        if cupos is None:
+            cupos = ev.get("availableCapacity")
+        if cupos is not None:
+            meta.append(f"{cupos} cupos")
         if ev.get("compatible"):
             meta.append("Compatible con tu perfil")
         out.append(

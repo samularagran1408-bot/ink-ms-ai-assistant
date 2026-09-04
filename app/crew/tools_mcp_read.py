@@ -12,7 +12,7 @@ from typing import Any, Optional
 from crewai.tools import tool
 
 from app.crew.ctx import authorization as jwt_sesion
-from app.crew.ctx import correr_async, log_taller, set_sesion
+from app.crew.ctx import correr_async, log_taller, registrar_lectura, set_sesion
 from app.services.mcp_client import llamar_tool
 from app.tools.writes import WRITE_TOOLS
 
@@ -51,9 +51,10 @@ def _llamar_lectura(nombre: str, argumentos: Optional[dict[str, Any]] = None) ->
 
     datos = correr_async(_go)
     if not isinstance(datos, dict):
-        return {"success": True, "via": "mcp", "data": datos}
-    if "via" not in datos:
+        datos = {"success": True, "via": "mcp", "data": datos}
+    elif "via" not in datos:
         datos = {**datos, "via": "mcp"}
+    registrar_lectura(nombre, datos)
     return datos
 
 
@@ -106,7 +107,7 @@ def listar_discapacidades() -> str:
 
 @tool("listar_eventos_disponibles")
 def listar_eventos_disponibles() -> str:
-    """Eventos abiertos a inscripción (lectura MCP GET)."""
+    """Eventos con cupos, sin lista de espera, abiertos a inscripción (lectura MCP GET)."""
     return _texto(_llamar_lectura("listar_eventos_disponibles"))
 
 
@@ -159,6 +160,7 @@ TOOLS_CONSULTA_MCP = (
     consultar_usuario,
     consultar_inscripciones,
     listar_eventos,
+    listar_eventos_disponibles,
     listar_deportes,
     listar_adaptaciones_deporte,
 )

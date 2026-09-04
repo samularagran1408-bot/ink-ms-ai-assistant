@@ -10,7 +10,8 @@
 | `agente` | Motor local (quiz, rutina, perfil) |
 
 **Escritura:** crew = `sandbox`. Chat = MCP real (`POST /api/ai/chat` + Confirmo).
-No hay `CREW_WRITE_MODE=mcp`: se ignora. El Angular no llama al MCP (`:8000`).
+El chat **orquesta CrewAI** en consulta, quiz, plan e investigación
+(`CHAT_ORQUESTA_CREW=true`). Altas reales no pasan por crew.
 
 ## Cinco crews (un dominio cada uno)
 
@@ -20,7 +21,7 @@ No hay `CREW_WRITE_MODE=mcp`: se ignora. El Angular no llama al MCP (`:8000`).
 | quiz | Preparación quiz | `info_quiz`, `muestra_preguntas_quiz` (local) |
 | competencia | Planes | competencia/riesgo local + MCP `listar_eventos_disponibles`, `listar_rutinas_publicadas` |
 | automatizado | Sandbox | CRUD fake + `Confirmo` |
-| consulta | Asesor individual | MCP perfil/inscripciones/eventos + `recomendar_*` / `generar_rutina` |
+| consulta | Asesor individual | MCP perfil/inscripciones/`listar_eventos`/`listar_eventos_disponibles` + `recomendar_*` / `generar_rutina` |
 
 Un agente no tiene las tools de otro. `allow_delegation=False`.
 

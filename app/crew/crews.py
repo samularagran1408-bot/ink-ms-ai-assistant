@@ -18,6 +18,14 @@ from app.crew.llm import candidatos_llm, llm_crew, llm_saturado
 from app.crew.schemas import InformeCrew
 from app.crew.tools_mcp_read import set_authorization
 
+_SALIDA_USUARIO = (
+    "InformeCrew para el usuario final: resumen = respuesta en español con hechos "
+    "(nombres, fechas, cupos). hallazgos = los mismos hechos. "
+    "tools_usadas = nombres reales de tools (p.ej. listar_eventos_disponibles). "
+    "PROHIBIDO en resumen y hallazgos: MCP, sandbox, Model Context Protocol, "
+    "herramientas, análisis de la interacción."
+)
+
 
 def _crew(agente, description: str, expected: str) -> Crew:
     tarea = Task(
@@ -40,10 +48,11 @@ def crew_investigacion(llm: Optional[LLM] = None) -> Crew:
         agente_investigacion(llm=llm),
         (
             "El usuario pregunta: '{mensaje}'.\n"
-            "Usa UNA o DOS tools MCP de lectura. Prioriza listar_eventos o "
-            "consultar_dashboard. Prohibido: crear/cancelar/bloquear, quiz, rutinas, quién soy."
+            "Usa UNA o DOS tools de lectura. Prioriza listar_eventos o "
+            "consultar_dashboard. Prohibido: crear/cancelar/bloquear, quiz, rutinas, quién soy.\n"
+            "Responde con cifras y nombres reales. No menciones MCP ni sandbox."
         ),
-        "Informe: resumen, tools_usadas, via_mcp, fuente_tools, hallazgos sin inventar.",
+        _SALIDA_USUARIO,
     )
 
 
@@ -54,9 +63,10 @@ def crew_quiz(llm: Optional[LLM] = None) -> Crew:
         (
             "El usuario pregunta: '{mensaje}'.\n"
             "Usa info_quiz y/o muestra_preguntas_quiz. No llames tools de eventos, "
-            "dashboard, usuarios ni sandbox."
+            "dashboard, usuarios ni sandbox.\n"
+            "Explica umbrales y banco al usuario. No menciones MCP ni sandbox."
         ),
-        "Informe con umbrales y banco. via_mcp=false. fuente_tools=agente.",
+        _SALIDA_USUARIO,
     )
 
 
@@ -68,9 +78,10 @@ def crew_competencia(llm: Optional[LLM] = None) -> Crew:
             "El usuario pregunta: '{mensaje}'.\n"
             "Usa panorama_competencia o evaluar_riesgo_plan. Opcional: "
             "listar_eventos_disponibles o listar_rutinas_publicadas solo para contexto. "
-            "Prohibido: quiz, dashboard admin, CRUD."
+            "Prohibido: quiz, dashboard admin, CRUD.\n"
+            "Habla de plan y riesgo. No menciones MCP ni sandbox."
         ),
-        "Informe de plan/riesgo. tools_usadas y via_mcp si usaste MCP de contexto.",
+        _SALIDA_USUARIO,
     )
 
 
@@ -95,10 +106,16 @@ def crew_consulta(llm: Optional[LLM] = None) -> Crew:
         agente_consulta(llm=llm),
         (
             "El usuario pregunta: '{mensaje}'.\n"
-            "Usa perfil/inscripciones/eventos/deportes/adaptaciones o recomendar_*/generar_rutina. "
-            "Prohibido: dashboard global, quiz, CRUD, bloquear."
+            "Hablas con el usuario de InkluSport, no con un evaluador de taller.\n"
+            "Si pregunta por eventos disponibles, cupos, lista de espera o inscripción, "
+            "llama listar_eventos_disponibles. Si necesita el listado general, listar_eventos. "
+            "Si es para ESA persona, consultar_usuario y consultar_inscripciones. "
+            "También puedes usar deportes, adaptaciones o recomendar_*/generar_rutina.\n"
+            "En resumen: lista concreta (nombre, fecha, cupos) o di que no hay. "
+            "Prohibido: dashboard global, quiz, CRUD, bloquear, MCP, sandbox, "
+            "Model Context Protocol, 'análisis de la interacción'."
         ),
-        "Informe para ESA persona. via_mcp si leíste MCP; fuente agente si fue local.",
+        _SALIDA_USUARIO,
     )
 
 
