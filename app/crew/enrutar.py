@@ -98,6 +98,7 @@ _SOLO_CHAT = frozenset(
         "salud",
         "respiracion",
         "equipamiento",
+        "cancelar_inscripcion",
     }
 )
 

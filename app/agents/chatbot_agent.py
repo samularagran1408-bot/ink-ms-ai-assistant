@@ -27,13 +27,17 @@ from app.motor.cuerpo import debe_dibujar, mapa_corporal
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.intenciones import clasificar
 from app.nlp.admin_pedido import (
+    coincidencias_usuario,
     es_verdadero,
+    extraer_destino_bloqueo,
     filtrar_usuarios,
     pide_activos,
+    pide_desbloqueo,
     pide_exportar_pdf,
     pide_inactivos,
     pide_pdf_auditoria,
 )
+from app.nlp.inscripcion_pedido import coincidencias_inscripcion, extraer_nombre_evento
 from app.services.conversacion_service import ConversacionService
 from app.services.llm_service import LLMService, _limpiar, system_prompt
 from app.services.mcp_client import llamar_tool, listar_tools_openai
@@ -62,6 +66,7 @@ _CON_HERRAMIENTA = frozenset({
     "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
     "discapacidades", "adaptaciones", "quiz", "progreso", "cuenta",
     "crear_evento", "crear_deporte", "crear_rutina",
+    "bloquear_usuario", "cancelar_inscripcion",
     "exportar_pdf", "listar_usuarios", "lesiones",
 })
 
@@ -100,6 +105,7 @@ _TOOLS_UI = {
     "crear_deporte": "Preparando el alta del deporte",
     "crear_rutina": "Preparando el alta de la rutina",
     "inscripcion": "Revisando inscripciones",
+    "cancelar_inscripcion": "Cancelando tu inscripción",
     "bloquear_usuario": "Bloqueando usuario",
     "desactivar_usuario": "Desactivando usuario",
     "activar_usuario": "Activando usuario",
@@ -239,6 +245,24 @@ class ChatbotAgent:
                 roles=roles or [], perfil=perfil,
             )
 
+        # Escrituras reales: propuesta local + Confirmo → MCP (el LLM no llama la tool).
+        if intencion in ("bloquear_usuario", "cancelar_inscripcion"):
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
+                )
+            resultado = await self._responder_conocido(
+                usuario_id, intencion, clave_discapacidad, authorization, mensaje,
+                roles=roles or [], perfil=perfil,
+            )
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
+                )
+            return await self._sintetizar_como_agente(
+                mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
+            )
+
         # 1b) Dominio CrewAI (consulta, quiz, plan, investigación). Altas reales no.
         if settings.CHAT_ORQUESTA_CREW:
             from app.crew.puente_chat import ejecutar_crew_en_chat
@@ -370,8 +394,8 @@ class ChatbotAgent:
         historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
         roles = roles or []
 
-        pendiente = await self.conversaciones.leer_pendiente_write(
-            usuario_id, conversacion_id
+        conversacion_id, pendiente = await self._cargar_pendiente(
+            usuario_id, conversacion_id, mensaje
         )
         if pendiente:
             resultado = await self._resolver_pendiente(
@@ -382,6 +406,8 @@ class ChatbotAgent:
                 roles,
                 pendiente,
             )
+        elif es_confirmacion(mensaje) or es_cancelacion(mensaje):
+            resultado = self._sin_pendiente(mensaje, clave_discapacidad)
         else:
             clasificacion = clasificar(mensaje)
             intencion = clasificacion["nombre"]
@@ -432,8 +458,8 @@ class ChatbotAgent:
         historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
         roles = roles or []
 
-        pendiente = await self.conversaciones.leer_pendiente_write(
-            usuario_id, conversacion_id
+        conversacion_id, pendiente = await self._cargar_pendiente(
+            usuario_id, conversacion_id, mensaje
         )
         cola: asyncio.Queue = asyncio.Queue()
         eventos_side = _EmisorEventos(cola)
@@ -457,6 +483,19 @@ class ChatbotAgent:
                     await cola.put({"evento": "_error", "detalle": str(exc)})
 
             tarea = asyncio.create_task(_trabajo_pendiente())
+        elif es_confirmacion(mensaje) or es_cancelacion(mensaje):
+            yield _evento_ui("estado", "confirmando_accion")
+
+            async def _trabajo_sin_pendiente():
+                """Confirmo/Cancelar sin escritura pendiente: responde y no llama al LLM."""
+                await cola.put(
+                    {
+                        "evento": "_done",
+                        "resultado": self._sin_pendiente(mensaje, clave_discapacidad),
+                    }
+                )
+
+            tarea = asyncio.create_task(_trabajo_sin_pendiente())
         else:
             clasificacion = clasificar(mensaje)
             intencion = clasificacion["nombre"]
@@ -937,6 +976,7 @@ class ChatbotAgent:
             }
 
         nombre = str(pendiente.get("tool") or "")
+        print(f"Confirmo: ejecutando {nombre}", flush=True)
         args = self._fijar_actor(
             nombre, pendiente.get("args") or {}, usuario_id, roles, mensaje=mensaje
         )
@@ -959,6 +999,47 @@ class ChatbotAgent:
             "fuente": "agente",
             "herramientas_usadas": [nombre],
             "tool_calling": True,
+            "pendiente_write": None,
+        }
+
+    async def _cargar_pendiente(
+        self,
+        usuario_id: str,
+        conversacion_id: str,
+        mensaje: str,
+    ) -> tuple[str, Optional[dict[str, Any]]]:
+        """Pendiente de este hilo, o el más reciente del usuario si dice Confirmo."""
+        pend = await self.conversaciones.leer_pendiente_write(usuario_id, conversacion_id)
+        if isinstance(pend, dict):
+            return conversacion_id, pend
+        if not (es_confirmacion(mensaje) or es_cancelacion(mensaje)):
+            return conversacion_id, None
+        hallado = await self.conversaciones.leer_pendiente_reciente(usuario_id)
+        if not hallado:
+            return conversacion_id, None
+        cid, pend = hallado
+        print(f"Confirmo: usando pendiente del hilo {cid}", flush=True)
+        return cid, pend
+
+    def _sin_pendiente(self, mensaje: str, discapacidad: str) -> dict[str, Any]:
+        """Respuesta cuando el usuario confirma o cancela y no hay escritura en cola."""
+        if es_cancelacion(mensaje) and not es_confirmacion(mensaje):
+            texto = "No había ninguna acción pendiente que cancelar."
+        else:
+            texto = (
+                "No tengo ninguna acción pendiente. "
+                "Primero pide, por ejemplo: «Bloquear a correo@dominio.com» "
+                "o «Crea un evento de natación». Cuando salga la tarjeta Confirmar, "
+                "responde solo Confirmo."
+            )
+        return {
+            "respuesta": texto,
+            "intencion": "general",
+            "adaptada": discapacidad != "general",
+            "sugerencias": ["Bloquear a ", "Crea un evento"],
+            "datos": {},
+            "fuente": "motor_local",
+            "herramientas_usadas": [],
             "pendiente_write": None,
         }
 
@@ -1021,6 +1102,8 @@ class ChatbotAgent:
             "crear_evento": "propuesta_evento",
             "crear_deporte": "propuesta_deporte",
             "crear_rutina": "propuesta_rutina",
+            "bloquear_usuario": "propuesta_bloqueo",
+            "cancelar_inscripcion": "propuesta_cancelar_inscripcion",
             "lesiones": "cuerpo",
         }.get(intencion)
         if accion:
@@ -1353,6 +1436,8 @@ class ChatbotAgent:
             "propuesta_evento": self._datos_propuesta_evento,
             "propuesta_deporte": self._datos_propuesta_deporte,
             "propuesta_rutina": self._datos_propuesta_rutina,
+            "propuesta_bloqueo": self._datos_propuesta_bloqueo,
+            "propuesta_cancelar_inscripcion": self._datos_propuesta_cancelar_inscripcion,
             "exportar_pdf": self._datos_exportar_pdf,
             "usuarios": self._datos_usuarios,
             "cuerpo": self._datos_cuerpo,
@@ -1374,6 +1459,8 @@ class ChatbotAgent:
                 "propuesta_evento",
                 "propuesta_deporte",
                 "propuesta_rutina",
+                "propuesta_bloqueo",
+                "propuesta_cancelar_inscripcion",
                 "exportar_pdf",
                 "usuarios",
                 "cuerpo",
@@ -1755,6 +1842,203 @@ class ChatbotAgent:
                     "cupos_disponibles": 24,
                 }
             ],
+        }
+
+    async def _datos_propuesta_bloqueo(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """Propone bloquear o reactivar un usuario real (MCP + Confirmo)."""
+        roles = kwargs.get("roles") or []
+        if "admin" not in self._claves_rol(roles):
+            return ("Solo un administrador puede bloquear o reactivar cuentas.", {})
+
+        destino = extraer_destino_bloqueo(mensaje)
+        if not destino:
+            return (
+                "Dime el correo o el nombre exacto de la persona. "
+                "Ejemplo: Bloquear a ana@correo.com",
+                {},
+            )
+
+        perfil = kwargs.get("perfil") or {}
+        mi_email = str(perfil.get("email") or "").strip().lower()
+        mi_nombre = str(perfil.get("fullName") or "").strip().lower()
+        if destino.lower() in {mi_email, mi_nombre}:
+            return ("No voy a bloquear tu propia cuenta de administrador.", {})
+
+        lista = await self.user_service.list_users(authorization)
+        if destino and "@" not in destino:
+            buscados = await self.user_service.search_users(destino, authorization=authorization)
+            if buscados:
+                lista = buscados + [u for u in lista if u not in buscados]
+        matches = coincidencias_usuario(lista, destino)
+        if not matches:
+            return (
+                f"No encontré a «{destino}» entre los usuarios. "
+                "Prueba con el email completo.",
+                {"data": []},
+            )
+        if len(matches) > 1:
+            lineas = [f"Hay {len(matches)} coincidencias; dime el email exacto:"]
+            for usuario in matches[:8]:
+                nombre = usuario.get("fullName") or "Usuario"
+                email = usuario.get("email") or "?"
+                lineas.append(f"- {nombre} · {email}")
+            return "\n".join(lineas), {"data": matches[:8]}
+
+        objetivo = matches[0]
+        email = str(objetivo.get("email") or "").strip()
+        nombre = objetivo.get("fullName") or email
+        if not email:
+            return ("Esa cuenta no tiene email; no puedo bloquearla por MCP.", {})
+        if email.lower() == mi_email:
+            return ("No voy a bloquear tu propia cuenta de administrador.", {})
+
+        activar = pide_desbloqueo(mensaje)
+        ya_activo = objetivo.get("isActive") is not False
+        if activar and ya_activo:
+            return (f"{nombre} ({email}) ya está activo. No hay nada que reactivar.", {})
+        if not activar and not ya_activo:
+            return (
+                f"{nombre} ({email}) ya figura como inactivo. "
+                f"Si quieres reactivarlo, dime «Activar a {email}».",
+                {},
+            )
+
+        tool = "activar_usuario" if activar else "bloquear_usuario"
+        args = {
+            "nombre_o_email": email,
+            "reason": "Bloqueo solicitado desde el asistente InkluSport",
+        }
+        if not activar:
+            args["permanent"] = True
+        pendiente = {
+            "tool": tool,
+            "args": args,
+            "resumen": resumen_write(tool, args),
+        }
+        verbo = "reactivar" if activar else "bloquear"
+        texto = (
+            f"Voy a {verbo} a {nombre} ({email}) en Users. "
+            "Al recargar el panel de usuarios el cambio se verá persistido. "
+            "Responde Confirmo para ejecutarlo, o Cancelar."
+        )
+        return texto, {
+            "pendiente_write": pendiente,
+            "usuario_card": {
+                "nombre": nombre,
+                "discapacidad": objetivo.get("disability"),
+                "roles": objetivo.get("roles") or [],
+            },
+        }
+
+    async def _datos_propuesta_cancelar_inscripcion(
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **kwargs: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """Propone dar de baja la inscripción del usuario (MCP + Confirmo)."""
+        perfil = kwargs.get("perfil") or {}
+        ids: list[str] = []
+        for candidato in (
+            usuario_id,
+            perfil.get("id"),
+            perfil.get("userId"),
+            perfil.get("_id"),
+        ):
+            clave = str(candidato or "").strip()
+            if clave and clave not in ids:
+                ids.append(clave)
+
+        registros: list[dict[str, Any]] = []
+        vistos: set[str] = set()
+        for clave in ids:
+            for reg in await self.sports_service.get_eventos_usuario(clave, authorization):
+                rid = str(reg.get("id") or "")
+                if rid and rid in vistos:
+                    continue
+                if rid:
+                    vistos.add(rid)
+                registros.append(reg)
+
+        if not registros:
+            return (
+                "No tienes inscripciones activas en eventos. "
+                "Si quieres, te muestro los eventos con cupo para inscribirte.",
+                {"inscripciones": []},
+            )
+
+        pedido = extraer_nombre_evento(mensaje)
+        matches = coincidencias_inscripcion(registros, pedido)
+        if pedido and not matches:
+            nombres = [
+                str(r.get("eventName") or "Evento")
+                for r in registros[:8]
+            ]
+            listado = ", ".join(nombres) if nombres else "ninguna"
+            return (
+                f"No encontré una inscripción a «{pedido}». "
+                f"Tus inscripciones actuales: {listado}.",
+                {"inscripciones": registros[:8]},
+            )
+        if not pedido and len(matches) > 1:
+            lineas = ["Estás inscrito en varios eventos. Dime cuál quieres cancelar:"]
+            for reg in matches[:8]:
+                nombre = reg.get("eventName") or "Evento"
+                fecha = reg.get("eventDate") or ""
+                extra = f" ({fecha})" if fecha else ""
+                lineas.append(f"- {nombre}{extra}")
+            return "\n".join(lineas), {"inscripciones": matches[:8]}
+        if len(matches) > 1 and pedido:
+            lineas = [
+                f"Hay {len(matches)} inscripciones que coinciden con «{pedido}». "
+                "Dime el nombre exacto:"
+            ]
+            for reg in matches[:8]:
+                nombre = reg.get("eventName") or "Evento"
+                lineas.append(f"- {nombre}")
+            return "\n".join(lineas), {"inscripciones": matches[:8]}
+
+        objetivo = matches[0]
+        registration_id = str(objetivo.get("id") or "").strip()
+        event_name = str(objetivo.get("eventName") or "el evento").strip()
+        if not registration_id:
+            return (
+                f"Encontré «{event_name}», pero no pude resolver el id de la inscripción.",
+                {},
+            )
+        if objetivo.get("attended") is True:
+            return (
+                f"No puedo cancelar «{event_name}»: ya registraron tu asistencia.",
+                {"inscripciones": [objetivo]},
+            )
+
+        args = {
+            "registration_id": registration_id,
+            "event_id": str(objetivo.get("eventId") or ""),
+            "event_name": event_name,
+            "user_id": usuario_id,
+        }
+        pendiente = {
+            "tool": "cancelar_inscripcion",
+            "args": args,
+            "resumen": resumen_write("cancelar_inscripcion", args),
+        }
+        texto = (
+            f"Voy a cancelar tu inscripción a «{event_name}». "
+            "Responde Confirmo para ejecutarla en la plataforma, o Cancelar."
+        )
+        return texto, {
+            "pendiente_write": pendiente,
+            "inscripciones": [objetivo],
         }
 
     async def _datos_propuesta_deporte(

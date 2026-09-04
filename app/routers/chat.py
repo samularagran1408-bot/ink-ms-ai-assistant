@@ -96,7 +96,9 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
     """Empaqueta el dict del agente en ChatResponse con cards, MCP y perfil de sesión."""
     cid = resultado.get("conversacion_id") or request_hilo_id or "nueva"
     herramientas = resultado.get("herramientas_usadas") or []
-    datos_crudos = resultado.get("datos") or {}
+    datos_crudos = dict(resultado.get("datos") or {})
+    if resultado.get("pendiente_write") and "pendiente_write" not in datos_crudos:
+        datos_crudos["pendiente_write"] = resultado["pendiente_write"]
     cards = construir_cards(datos_crudos, herramientas)
     mcp = mcp_del_turno(
         tool_calling=bool(resultado.get("tool_calling")),

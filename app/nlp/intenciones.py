@@ -149,11 +149,23 @@ _DEFINICIONES = [
         prioridad=1.2,
     ),
     Intencion(
+        nombre="cancelar_inscripcion",
+        descripcion="Darse de baja de un evento en el que ya está inscrito",
+        frases=(
+            "cancelar inscripcion", "cancela mi inscripcion", "cancelar mi inscripcion",
+            "cancela la inscripcion", "anular inscripcion", "anula mi inscripcion",
+            "darme de baja del evento", "darme de baja de un evento",
+            "quitarme del evento", "desinscribirme", "me doy de baja",
+        ),
+        palabras=("desinscribir", "desinscribirme"),
+        prioridad=1.8,
+    ),
+    Intencion(
         nombre="inscripcion",
         descripcion="Cómo inscribirse a un evento",
         frases=(
             "como me inscribo", "quiero inscribirme", "como participar",
-            "como me registro en el evento", "lista de espera", "cancelar inscripcion",
+            "como me registro en el evento", "lista de espera",
         ),
         palabras=("inscribir", "inscripcion", "inscribirme", "participar", "cupo", "cupos", "anotarme"),
         prioridad=1.35,

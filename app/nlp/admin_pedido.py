@@ -2,7 +2,22 @@
 
 from __future__ import annotations
 
+import re
+
 from app.nlp.texto import normalizar
+
+_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_DESTINO_BLOQUEO = re.compile(
+    r"(?:bloquear|desactivar|banear|suspender|desbloquear|activar)\s+"
+    r"(?:el\s+usuario\s+|al\s+usuario\s+|usuario\s+|a\s+|al\s+)?(.+)",
+    re.IGNORECASE,
+)
+_DESBLOQUEO = (
+    "desbloquear",
+    "activar usuario",
+    "activar a",
+    "reactivar usuario",
+)
 
 _INACTIVOS = (
     "inactivo",
@@ -37,6 +52,46 @@ _PDF = (
     "exportar como pdf",
     "exporta como pdf",
 )
+
+
+def pide_desbloqueo(mensaje: str) -> bool:
+    """True si pide activar/desbloquear, no bloquear."""
+    texto = normalizar(mensaje)
+    return any(pieza in texto for pieza in _DESBLOQUEO)
+
+
+def extraer_destino_bloqueo(mensaje: str) -> str:
+    """Email o nombre a bloquear/activar, extraído del mensaje del admin."""
+    texto = (mensaje or "").strip()
+    mail = _EMAIL.search(texto)
+    if mail:
+        return mail.group(0).strip()
+    m = _DESTINO_BLOQUEO.search(texto)
+    if not m:
+        return ""
+    dest = m.group(1).strip(" .,:;\"'«»")
+    dest = re.split(r"\s+(?:porque|por|con motivo)\b", dest, maxsplit=1, flags=re.I)[0]
+    dest = re.sub(r"\s+(de forma )?permanente(mente)?$", "", dest, flags=re.I)
+    return dest.strip(" .,:;\"'")
+
+
+def coincidencias_usuario(lista: list, destino: str) -> list[dict]:
+    """Usuarios cuyo email o nombre encajan con el destino pedido."""
+    clave = (destino or "").strip().lower()
+    if not clave:
+        return []
+    usuarios = [u for u in (lista or []) if isinstance(u, dict)]
+    exactos = [u for u in usuarios if str(u.get("email") or "").strip().lower() == clave]
+    if exactos:
+        return exactos
+    if "@" in clave:
+        return []
+    return [
+        u
+        for u in usuarios
+        if clave in str(u.get("fullName") or "").lower()
+        or clave in str(u.get("email") or "").lower()
+    ]
 
 
 def pide_inactivos(mensaje: str) -> bool:

@@ -71,6 +71,7 @@ class PlanesAgent:
         variacion = _VARIACION_POR_OBJETIVO.get(
             objetivo_clave, _VARIACION_POR_OBJETIVO["general"]
         )
+        ya_usados: set[str] = set()
         for semana in range(1, semanas + 1):
             # Progresión suave: sube nivel a mitad de plan si hay margen.
             nivel_semana = NIVELES[min(idx_nivel + (1 if semana > semanas // 2 else 0), 2)]
@@ -86,6 +87,34 @@ class PlanesAgent:
                     duracion_minutos=duracion_minutos + (5 if semana > 2 else 0),
                     semilla=semilla,
                     catalogo=catalogo,
+                    excluir_ids=set(ya_usados),
+                )
+                ids_sesion = [
+                    str(e.get("id"))
+                    for e in (rutina.get("ejercicios") or [])
+                    if e.get("id")
+                ]
+                # Si el catálogo no da para más unicidad, reintenta solo con unicidad intra-sesión.
+                if rutina.get("total_ejercicios", 0) < 4 and ya_usados:
+                    rutina = generar_rutina(
+                        discapacidad=discapacidad_final,
+                        objetivo_texto=objetivo if objetivo_clave != "general" else enfoque,
+                        tipo_texto=enfoque if objetivo_clave != "general" else "",
+                        nivel=nivel_semana,
+                        duracion_minutos=duracion_minutos + (5 if semana > 2 else 0),
+                        semilla=semilla,
+                        catalogo=catalogo,
+                    )
+                    ids_sesion = [
+                        str(e.get("id"))
+                        for e in (rutina.get("ejercicios") or [])
+                        if e.get("id")
+                    ]
+                ya_usados.update(ids_sesion)
+                ya_usados.update(
+                    (e.get("nombre") or "").strip().lower()
+                    for e in (rutina.get("ejercicios") or [])
+                    if e.get("nombre")
                 )
                 sesiones.append({
                     "semana": semana,

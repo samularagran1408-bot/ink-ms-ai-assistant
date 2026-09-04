@@ -566,6 +566,14 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
         "sugerencias": ["Confirmo", "Cancelar"],
         "accion": "propuesta_rutina",
     },
+    "bloquear_usuario": {
+        "respuestas": [
+            "Localizo la cuenta y te pido confirmación antes de bloquearla de verdad.",
+            "El bloqueo queda en Users; al recargar el panel de usuarios se verá inactivo.",
+        ],
+        "sugerencias": ["Confirmo", "Cancelar"],
+        "accion": "propuesta_bloqueo",
+    },
     "exportar_pdf": {
         "respuestas": [
             "Preparo el PDF para que lo descargues desde el chat.",

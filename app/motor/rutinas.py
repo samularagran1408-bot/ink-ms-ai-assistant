@@ -219,12 +219,28 @@ def _sample_ponderado(
         return []
 
     excluir_ids = excluir_ids or set()
+    excluir_nombres = {
+        (e.get("nombre") or "").strip().lower()
+        for e in pool
+        if e.get("id") in excluir_ids
+    }
+    excluir_nombres.update(
+        str(x).strip().lower() for x in excluir_ids if isinstance(x, str) and " " in str(x)
+    )
+
+    def _fuera(ejercicio: dict) -> bool:
+        eid = ejercicio.get("id")
+        nombre = (ejercicio.get("nombre") or "").strip().lower()
+        return (eid and eid in excluir_ids) or (
+            nombre and (nombre in excluir_nombres or nombre in excluir_ids)
+        )
+
     # Ventana de candidatos: top-K tras jitter, luego sample ponderado
     puntuados: list[tuple[float, dict]] = []
     for e in pool:
+        if _fuera(e):
+            continue
         base = _puntuar(e, objetivo, posicion, nivel, discapacidad, objetivo_secundario)
-        if e.get("id") in excluir_ids:
-            base -= 2.5  # evita repetir la rutina anterior del mismo usuario
         # Ruido controlado: suficiente para variar, no para elegir basura
         score = max(0.05, base + azar.uniform(-1.2, 1.2))
         puntuados.append((score, e))
@@ -264,13 +280,18 @@ def _sample_ponderado(
         if pick.get("id"):
             ids_usados.add(pick["id"])
 
-    # Segunda: rellenar desde el resto del pool si hace falta
+    # Segunda: rellenar desde el resto del pool si hace falta (aún sin repetir)
     if len(elegidos) < cantidad:
-        resto = [e for e in pool if e.get("id") not in ids_usados]
+        resto = [e for e in pool if e.get("id") not in ids_usados and not _fuera(e)]
         azar.shuffle(resto)
         for e in resto:
             if len(elegidos) >= cantidad:
                 break
+            nombre = (e.get("nombre") or "").strip().lower()
+            if nombre and any(
+                (x.get("nombre") or "").strip().lower() == nombre for x in elegidos
+            ):
+                continue
             elegidos.append(e)
             if e.get("id"):
                 ids_usados.add(e["id"])
@@ -485,6 +506,9 @@ def generar_rutina(
         for e in elegidos:
             if e.get("id"):
                 excluidos.add(e["id"])
+            nombre = (e.get("nombre") or "").strip().lower()
+            if nombre:
+                excluidos.add(nombre)
 
     bloques = []
     ejercicios_planos = []

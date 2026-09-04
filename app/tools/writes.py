@@ -10,6 +10,7 @@ WRITE_TOOLS = frozenset(
         "editar_evento",
         "cancelar_evento",
         "inscribirse_evento",
+        "cancelar_inscripcion",
         "registrar_discapacidad",
         "editar_discapacidad",
         "desactivar_discapacidad",
@@ -56,17 +57,28 @@ def es_write(nombre: str) -> bool:
 
 
 def es_confirmacion(mensaje: str) -> bool:
-    """True si el mensaje del usuario autoriza ejecutar la escritura pendiente."""
+    """True si el usuario autoriza la escritura pendiente (Confirmo, te confirmo, …)."""
     t = " ".join((mensaje or "").strip().lower().split())
+    t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
+    t = " ".join(t.split())
+    if not t:
+        return False
     if t in _CONFIRMA or t.startswith("confirmo"):
         return True
-    return t in {"si, confirmo", "sí, confirmo", "si confirmo", "sí confirmo"}
+    tokens = t.split()
+    return "confirmo" in tokens or "confirmado" in tokens
 
 
 def es_cancelacion(mensaje: str) -> bool:
-    """True si el usuario cancela la escritura pendiente (no, cancelar, etc.)."""
+    """True si el usuario aborta la escritura pendiente (no, cancelar, …).
+
+    Solo frases cortas: «cancela mi inscripción al evento X» no es abortar
+    un Confirmo, es un pedido de baja.
+    """
     t = " ".join((mensaje or "").strip().lower().split())
-    return t in _CANCELA or t.startswith("cancel")
+    t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
+    t = " ".join(t.split())
+    return t in _CANCELA
 
 
 def resumen_write(nombre: str, args: dict[str, Any]) -> str:
@@ -74,6 +86,9 @@ def resumen_write(nombre: str, args: dict[str, Any]) -> str:
     args = args or {}
     if nombre == "inscribirse_evento":
         return f"Inscribirte al evento {args.get('event_id') or args.get('eventId') or '?'}"
+    if nombre == "cancelar_inscripcion":
+        evento = args.get("event_name") or args.get("event_id") or "?"
+        return f"Cancelar tu inscripción a «{evento}»"
     if nombre == "crear_evento":
         return f"Crear el evento «{args.get('name') or '?'}» el {args.get('event_date') or '?'}"
     if nombre == "editar_evento":

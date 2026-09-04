@@ -383,6 +383,32 @@ class ConversacionService:
         pendiente = (doc or {}).get("pendiente_write")
         return pendiente if isinstance(pendiente, dict) else None
 
+    async def leer_pendiente_reciente(
+        self, usuario_id: str
+    ) -> Optional[tuple[str, dict[str, Any]]]:
+        """Última conversación activa con una escritura pendiente (cualquier hilo)."""
+        db = get_db()
+        if db is None:
+            return None
+        try:
+            doc = await db[COL_CONVERSACIONES].find_one(
+                {
+                    "usuario_id": usuario_id,
+                    "estado": "activa",
+                    "pendiente_write": {"$type": "object"},
+                },
+                {"_id": 0, "conversacion_id": 1, "pendiente_write": 1},
+                sort=[("ultima_interaccion", -1)],
+            )
+        except Exception as exc:
+            print(f"Error buscando pendiente reciente: {exc}", flush=True)
+            return None
+        pend = (doc or {}).get("pendiente_write")
+        cid = str((doc or {}).get("conversacion_id") or "")
+        if isinstance(pend, dict) and cid:
+            return cid, pend
+        return None
+
     # ------------------------------------------------------------------- helpers
 
     async def _buscar_doc(

@@ -65,6 +65,18 @@ def test_hola_va_al_chat():
         assert exc.intencion == "saludo"
 
 
+def test_cancelar_inscripcion_va_al_chat():
+    """Darse de baja es escritura del chat, no el crew de consulta."""
+    try:
+        resolver_dominio(
+            "Cancela mi inscripción al evento de Festival Acuático Inclusivo",
+            "auto",
+        )
+        raise AssertionError("debía lanzar EnrutadoAlChat")
+    except EnrutadoAlChat as exc:
+        assert exc.intencion == "cancelar_inscripcion"
+
+
 def test_auto_quiz_y_consulta():
     """Clasifica umbral → quiz y recomendaciones → consulta."""
     quiz = resolver_dominio("¿Cuál es el umbral del quiz de organizador?", "auto")
