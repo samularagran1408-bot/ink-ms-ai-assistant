@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from app.database.mongodb import get_db
-from app.database.repositorio import COL_CONVERSACIONES, COL_PLANES, COL_SESIONES_RPE
+from app.database.repositorio import COL_CONVERSACIONES, COL_ENTRENAMIENTO, COL_PLANES, COL_SESIONES_RPE
 from app.services.reports_service import ReportsService
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
@@ -102,7 +102,21 @@ class HistorialAgent:
                     {"periodo": "actual", "valor": rpe_avg_actual or 0},
                 ],
             },
+            "sesiones_historial": sorted(
+                [
+                    {
+                        "fecha": r.get("fecha"),
+                        "rpe": r.get("rpe"),
+                        "origen": r.get("origen") or "rpe",
+                    }
+                    for r in rpe
+                    if r.get("rpe") is not None
+                ],
+                key=lambda s: str(s.get("fecha") or ""),
+                reverse=True,
+            )[:12],
             "rf": ["RF47", "RF48"],
+            "caso_prueba": "CP23-HU46",
         }
 
     async def metricas(
@@ -140,16 +154,42 @@ class HistorialAgent:
         return "estable"
 
     async def _rpe_usuario(self, usuario_id: str) -> list[dict]:
-        """Lee las sesiones RPE del atleta en Mongo (hasta 200). Vacío si no hay DB."""
+        """Une sesiones RPE persistidas y las del perfil de entrenamiento (chat)."""
         db = get_db()
         if db is None:
             return []
+        filas: list[dict] = []
         try:
-            return await db[COL_SESIONES_RPE].find(
+            docs = await db[COL_SESIONES_RPE].find(
                 {"usuario_id": usuario_id}, {"_id": 0}
             ).to_list(length=200)
+            for d in docs:
+                filas.append({**d, "origen": "rpe"})
         except Exception:
-            return []
+            pass
+        try:
+            perfil = await db[COL_ENTRENAMIENTO].find_one(
+                {"usuario_id": usuario_id}, {"_id": 0, "sesiones_cerradas": 1}
+            )
+            for s in (perfil or {}).get("sesiones_cerradas") or []:
+                if not isinstance(s, dict):
+                    continue
+                filas.append({
+                    "fecha": s.get("fecha"),
+                    "rpe": s.get("rpe") or s.get("marca"),
+                    "origen": "agente",
+                })
+        except Exception:
+            pass
+        vistos: set[str] = set()
+        unicas: list[dict] = []
+        for fila in filas:
+            clave = f"{fila.get('fecha')}|{fila.get('rpe')}"
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            unicas.append(fila)
+        return unicas
 
     async def _planes_usuario(self, usuario_id: str) -> list[dict]:
         """Lista los `plan_id` de planes guardados del atleta. Vacío si no hay DB."""

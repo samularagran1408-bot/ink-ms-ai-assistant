@@ -163,6 +163,23 @@ class PlanesAgent:
             return None
         return await db[COL_PLANES].find_one({"plan_id": plan_id}, {"_id": 0})
 
+    async def listar_planes(self, usuario_id: str, limite: int = 8) -> list[dict[str, Any]]:
+        """Últimos planes del atleta, más reciente primero. Vacío si no hay DB."""
+        db = get_db()
+        if db is None:
+            return []
+        try:
+            cursor = (
+                db[COL_PLANES]
+                .find({"usuario.id": usuario_id}, {"_id": 0})
+                .sort("creado_en", -1)
+                .limit(max(1, min(limite, 20)))
+            )
+            return await cursor.to_list(length=max(1, min(limite, 20)))
+        except Exception as exc:
+            print(f"No se pudieron listar planes: {exc}")
+            return []
+
     async def _resumen(self, plan: dict, nombre: str) -> str:
         """Redacta un resumen corto del plan; usa LLM si está disponible."""
         base = (

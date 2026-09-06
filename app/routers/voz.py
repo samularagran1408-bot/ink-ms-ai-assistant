@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.chatbot_agent import ChatbotAgent
 from app.deps.contexto import discapacidad_efectiva, resolver_contexto
+from app.nlp.entrenamiento_pedido import detectar_comando_entrenamiento
 from app.nlp.texto import normalizar
 from app.services.accessibility_service import AccessibilityService
 
@@ -43,14 +44,16 @@ async def comando_voz(request: VozRequest, authorization: Optional[str] = Header
         request.texto, request.language, ctx.authorization
     )
     limpio = normalizar(request.texto)
+    comando = detectar_comando_entrenamiento(request.texto)
 
-    accion = "chat"
-    if any(p in limpio for p in ("rutina", "entrenamiento", "ejercicio")):
-        accion = "rutina"
-    elif any(p in limpio for p in ("evento", "competencia", "inscripcion")):
-        accion = "eventos"
-    elif any(p in limpio for p in ("deporte", "que puedo practicar")):
-        accion = "deportes"
+    accion = comando or "chat"
+    if not comando:
+        if any(p in limpio for p in ("rutina", "entrenamiento", "ejercicio")):
+            accion = "rutina"
+        elif any(p in limpio for p in ("evento", "competencia", "inscripcion")):
+            accion = "eventos"
+        elif any(p in limpio for p in ("deporte", "que puedo practicar")):
+            accion = "deportes"
 
     resultado_chat = await chat_agent.procesar_mensaje(
         ctx.id,
@@ -58,10 +61,12 @@ async def comando_voz(request: VozRequest, authorization: Optional[str] = Header
         discapacidad,
         ctx.authorization,
         roles=ctx.roles,
+        perfil=ctx.perfil,
     )
 
     return {
         "accion": accion,
+        "comando_entrenamiento": comando,
         "usuario": {
             "id": ctx.id,
             "email": ctx.email,
@@ -73,5 +78,8 @@ async def comando_voz(request: VozRequest, authorization: Optional[str] = Header
         "intencion": resultado_chat.get("intencion"),
         "sugerencias": resultado_chat.get("sugerencias") or [],
         "respuesta_auditiva": resultado_chat.get("respuesta"),
+        "datos": resultado_chat.get("datos") or {},
+        "caso_prueba": (resultado_chat.get("datos") or {}).get("caso_prueba")
+        or resultado_chat.get("caso_prueba"),
         "rf": "RF46",
     }

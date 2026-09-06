@@ -52,6 +52,24 @@ async def generar_plan(request: PlanRequest, authorization: Optional[str] = Head
         raise HTTPException(status_code=500, detail=f"Error generando el plan: {exc}")
 
 
+@router.get("")
+@router.get("/")
+async def listar_planes(
+    usuario_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
+    """RF44 — lista los últimos planes guardados del atleta autenticado."""
+    ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
+    planes = await agent.listar_planes(ctx.id)
+    return {
+        "usuario_id": ctx.id,
+        "total": len(planes),
+        "planes": planes,
+        "rf": "RF44",
+        "caso_prueba": "CP16-HU42",
+    }
+
+
 @router.get("/{plan_id}")
 async def obtener_plan(plan_id: str, authorization: Optional[str] = Header(None)):
     """RF44 — recupera un plan previamente generado por su `plan_id`."""

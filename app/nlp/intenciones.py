@@ -469,6 +469,24 @@ _DEFINICIONES = [
         palabras=("inactivos", "inactivo"),
         prioridad=1.65,
     ),
+    Intencion(
+        nombre="iniciar_entrenamiento",
+        descripcion="Activar voz e iniciar la sesión de entrenamiento",
+        frases=("iniciar entrenamiento", "activar asistencia de voz", "activar voz"),
+        prioridad=1.85,
+    ),
+    Intencion(
+        nombre="pausar_entrenamiento",
+        descripcion="Pausar un entrenamiento activo",
+        frases=("pausar entrenamiento", "pausa el entrenamiento", "comando de pausa"),
+        prioridad=1.85,
+    ),
+    Intencion(
+        nombre="alerta_movimiento",
+        descripcion="Alerta de patrón de movimiento riesgoso",
+        frases=("movimiento riesgoso", "patron riesgoso", "alerta de riesgo"),
+        prioridad=1.85,
+    ),
 ]
 
 INTENCIONES: dict[str, Intencion] = {

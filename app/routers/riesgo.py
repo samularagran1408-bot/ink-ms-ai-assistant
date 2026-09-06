@@ -101,3 +101,41 @@ async def riesgo_lesiones(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Error evaluando riesgo: {exc}")
+
+
+@router.get("/historial")
+@router.get("/historial/{usuario_id}")
+async def historial_riesgo(
+    usuario_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
+    """RF43 — historial de evaluaciones de riesgo del atleta (se pueden borrar)."""
+    ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
+    items = await agent.listar_historial(ctx.id)
+    return {
+        "usuario_id": ctx.id,
+        "total": len(items),
+        "evaluaciones": items,
+        "rf": "RF43",
+    }
+
+
+@router.delete("/historial")
+async def vaciar_historial_riesgo(authorization: Optional[str] = Header(None)):
+    """RF43 — borra todo el historial de riesgo del atleta autenticado."""
+    ctx = await resolver_contexto(authorization, require_auth=True)
+    borrados = await agent.borrar_historial(ctx.id)
+    return {"ok": True, "borrados": borrados, "rf": "RF43"}
+
+
+@router.delete("/historial/{evaluacion_id}")
+async def borrar_evaluacion_riesgo(
+    evaluacion_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """RF43 — borra una evaluación concreta del historial."""
+    ctx = await resolver_contexto(authorization, require_auth=True)
+    ok = await agent.borrar_evaluacion(ctx.id, evaluacion_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Evaluación no encontrada")
+    return {"ok": True, "id": evaluacion_id, "rf": "RF43"}

@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from app.agents.entrenamiento_agent import EntrenamientoAgent
 from app.database.mongodb import get_db
 from app.database.repositorio import COL_SESIONES_RPE
 from app.deps.contexto import resolver_contexto
@@ -59,11 +60,23 @@ async def registrar_rpe(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"No se pudo guardar RPE: {exc}")
 
+    ajuste = None
+    try:
+        ajuste = await EntrenamientoAgent().aplicar_feedback_rpe(
+            ctx.id, request.rpe, ctx.disability or "general", ctx.authorization
+        )
+        if ajuste.get("plan_ajuste"):
+            sugerencia = ajuste["plan_ajuste"].get("detalle") or sugerencia
+    except Exception as exc:
+        print(f"No se pudo ajustar el plan por RPE: {exc}")
+
     return {
         "registrado": True,
         "usuario_id": ctx.id,
         "rpe": request.rpe,
         "sugerencia_siguiente_sesion": sugerencia,
+        "plan_ajuste": (ajuste or {}).get("plan_ajuste"),
         "modo": "rpe_post_sesion",
         "rf": "RF45",
+        "caso_prueba": "CP17-HU43" if request.rpe >= 8 else "CP18-HU43",
     }

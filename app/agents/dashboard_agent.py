@@ -231,7 +231,26 @@ class DashboardAgent:
                     "delta": (rpe.get("actual") or 0) - (rpe.get("anterior") or 0),
                     "icono": "bolt",
                 },
+                {
+                    "label": "RPE promedio",
+                    "actual": rpe.get("rpe_promedio_actual") or 0,
+                    "anterior": rpe.get("rpe_promedio_anterior") or 0,
+                    "delta": round(
+                        float(rpe.get("rpe_promedio_actual") or 0)
+                        - float(rpe.get("rpe_promedio_anterior") or 0),
+                        2,
+                    ),
+                    "icono": "heart",
+                },
+                {
+                    "label": "Planes guardados",
+                    "actual": int(comp.get("planes_guardados") or 0),
+                    "anterior": 0,
+                    "delta": int(comp.get("planes_guardados") or 0),
+                    "icono": "clipboard-document-list",
+                },
             ],
+            "sesiones_historial": (comparativa or {}).get("sesiones_historial") or [],
             "tendencia": (comparativa or {}).get("tendencia") or "estable",
             "modo_competencia": bool((modo or {}).get("activo")),
             "objetivo_competencia": (modo or {}).get("objetivo"),
@@ -295,26 +314,11 @@ class DashboardAgent:
             f"Resumen de {perfil.get('nombre') or 'tu perfil'}:",
             f"- Eventos inscritos: {kpis.get('eventos', {}).get('valor', 0)}",
             f"- Rutinas inscritas: {kpis.get('rutinas', {}).get('valor', 0)}",
-            f"- Riesgo: {kpis.get('riesgo', {}).get('valor', '—')}",
         ]
         if kpis.get("rpe", {}).get("valor") not in (None, "—"):
             lineas.append(f"- RPE reciente: {kpis['rpe']['valor']}")
         if vista.get("tendencia"):
             lineas.append(f"- Tendencia: {vista['tendencia']}")
-        panel = vista.get("progreso_panel") or {}
-        if panel:
-            lineas.append(
-                f"- Progreso del panel: {panel.get('asistencia_pct') or 0}% asistencia, "
-                f"{panel.get('rutinas') or 0} rutina(s)"
-            )
-        if vista.get("modo_competencia"):
-            obj = vista.get("objetivo_competencia") or "plan activo"
-            semana = vista.get("semana_competencia")
-            plan_pct = vista.get("plan_pct")
-            extra = f" (semana {semana}, {plan_pct}%)" if semana else ""
-            lineas.append(f"- Modo competencia: {obj}{extra}")
-        for alerta in (vista.get("alertas") or [])[:3]:
-            lineas.append(f"- Alerta: {alerta}")
         for ev in (vista.get("eventos") or [])[:3]:
             extra = " · ".join(ev.get("meta") or [])
             lineas.append(f"- Evento: {ev.get('titulo')}" + (f" ({extra})" if extra else ""))

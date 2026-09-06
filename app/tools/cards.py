@@ -249,7 +249,30 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
         )
 
     plan = bloque.get("plan")
-    if isinstance(plan, dict) and (plan.get("fases") or plan.get("checklist") or plan.get("objetivo")):
+    if isinstance(plan, dict) and (
+        plan.get("sesiones_por_semana")
+        or plan.get("sesiones")
+        or plan.get("semanas")
+    ) and not (plan.get("fases") or plan.get("checklist")):
+        total = plan.get("total_sesiones") or len(plan.get("sesiones") or [])
+        out.append(
+            {
+                "tipo": "rutina",
+                "tool": tool or "generar_plan",
+                "titulo": str(plan.get("objetivo") or "Plan semanal"),
+                "subtitulo": f"{plan.get('semanas') or 4} semanas · {plan.get('sesiones_por_semana') or 3} sesiones/semana",
+                "meta": [
+                    x
+                    for x in (
+                        f"{total} sesiones" if total else None,
+                        plan.get("resumen"),
+                    )
+                    if x
+                ],
+                "cta": {"accion": "ver_planes", "label": "Ver plan semanal", "id": str(plan.get("plan_id") or "")},
+            }
+        )
+    elif isinstance(plan, dict) and (plan.get("fases") or plan.get("checklist") or plan.get("objetivo")):
         fases = plan.get("fases") or []
         out.append(
             {
@@ -278,9 +301,27 @@ def _cards_desde_bloque(origen: str, bloque: dict[str, Any]) -> list[dict[str, A
                     "titulo": str(kpi.get("label") or kpi.get("clave") or "Dato"),
                     "subtitulo": str(kpi.get("valor")),
                     "meta": [str(kpi.get("icono") or "")],
-                    "cta": {"accion": "ver_estadisticas", "label": "Ver estadísticas", "id": ""},
+                    "cta": {"accion": "ver_estadisticas", "label": "Ver comparativa", "id": ""},
                 }
             )
+
+    comparacion = bloque.get("comparacion_sesion")
+    if isinstance(comparacion, dict) and (
+        comparacion.get("sesiones") or comparacion.get("ultima") is not None
+    ):
+        out.append(
+            {
+                "tipo": "kpi",
+                "tool": tool or "comparar_historial",
+                "titulo": "Vs tu historial de sesiones",
+                "subtitulo": (
+                    f"Última RPE {comparacion.get('ultima') if comparacion.get('ultima') is not None else '—'} "
+                    f"· promedio {comparacion.get('promedio_historico') if comparacion.get('promedio_historico') is not None else '—'}"
+                ),
+                "meta": [f"{comparacion.get('sesiones') or 0} sesiones"],
+                "cta": {"accion": "ver_estadisticas", "label": "Ver comparativa", "id": ""},
+            }
+        )
 
     payload = bloque.get("data") if isinstance(bloque.get("data"), dict) else bloque
     descarga = payload.get("descarga") if isinstance(payload, dict) else None

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
+from app.database.mongodb import get_db
+from app.database.repositorio import COL_EVALUACIONES_RIESGO
 from app.motor.cuerpo import mapa_corporal
 from app.nlp.discapacidad import canonizar, descripcion
 from app.services.sports_service import SportsService
@@ -93,7 +97,8 @@ class RiesgoAgent:
             nivel = "alto"
             alerta = "Riesgo alto. Prioriza descanso y consulta a un profesional de la salud."
 
-        return {
+        resultado = {
+            "id": str(uuid.uuid4()),
             "usuario_id": uid,
             "email": perfil.get("email"),
             "fullName": perfil.get("fullName"),
@@ -113,11 +118,71 @@ class RiesgoAgent:
             "eventos_inscritos": len(inscritos),
             "perfil_fuente": "users/perfil" if perfil.get("id") else "incompleto",
             "rf": "RF43",
+            "rpe_reciente": rpe_reciente,
+            "dolor_reportado": dolor_reportado,
+            "dias_sin_descanso": dias_sin_descanso,
             "limitacion": (limitacion or "").strip() or None,
+            "fecha": datetime.now(timezone.utc).isoformat(),
             "cuerpo": mapa_corporal("", limitacion)
             if (dolor_reportado or (limitacion or "").strip())
             else None,
         }
+        await self._guardar_evaluacion(resultado)
+        return resultado
+
+    async def listar_historial(self, usuario_id: str, limite: int = 20) -> list[dict[str, Any]]:
+        """Evaluaciones de riesgo guardadas, más reciente primero."""
+        db = get_db()
+        if db is None:
+            return []
+        try:
+            cursor = (
+                db[COL_EVALUACIONES_RIESGO]
+                .find({"usuario_id": usuario_id}, {"_id": 0, "cuerpo": 0})
+                .sort("fecha", -1)
+                .limit(max(1, min(limite, 50)))
+            )
+            return await cursor.to_list(length=max(1, min(limite, 50)))
+        except Exception as exc:
+            print(f"No se pudo leer historial de riesgo: {exc}")
+            return []
+
+    async def borrar_evaluacion(self, usuario_id: str, evaluacion_id: str) -> bool:
+        """Elimina una evaluación del atleta. False si no existe."""
+        db = get_db()
+        if db is None:
+            return False
+        try:
+            res = await db[COL_EVALUACIONES_RIESGO].delete_one(
+                {"usuario_id": usuario_id, "id": evaluacion_id}
+            )
+            return (res.deleted_count or 0) > 0
+        except Exception as exc:
+            print(f"No se pudo borrar evaluación de riesgo: {exc}")
+            return False
+
+    async def borrar_historial(self, usuario_id: str) -> int:
+        """Borra todas las evaluaciones del atleta. Devuelve cuántas se eliminaron."""
+        db = get_db()
+        if db is None:
+            return 0
+        try:
+            res = await db[COL_EVALUACIONES_RIESGO].delete_many({"usuario_id": usuario_id})
+            return int(res.deleted_count or 0)
+        except Exception as exc:
+            print(f"No se pudo vaciar historial de riesgo: {exc}")
+            return 0
+
+    async def _guardar_evaluacion(self, doc: dict[str, Any]) -> None:
+        """Persiste la evaluación; no falla la respuesta si Mongo no está."""
+        db = get_db()
+        if db is None:
+            return
+        try:
+            guardar = {k: v for k, v in doc.items() if k != "cuerpo"}
+            await db[COL_EVALUACIONES_RIESGO].insert_one(guardar)
+        except Exception as exc:
+            print(f"No se pudo guardar evaluación de riesgo: {exc}")
 
     def _recomendaciones(self, nivel: str, discapacidad: str) -> list[str]:
         """Pautas de seguridad genéricas más ajustes según nivel de riesgo y discapacidad."""

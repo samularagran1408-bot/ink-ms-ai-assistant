@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from typing import Any, AsyncIterator, Optional
 
 from app.agents.dashboard_agent import DashboardAgent
+from app.agents.entrenamiento_agent import EntrenamientoAgent
 
 from app.config import settings
 from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
@@ -38,6 +39,7 @@ from app.nlp.admin_pedido import (
     pide_pdf_auditoria,
 )
 from app.nlp.inscripcion_pedido import coincidencias_inscripcion, extraer_nombre_evento
+from app.nlp.entrenamiento_pedido import detectar_comando_entrenamiento
 from app.services.conversacion_service import ConversacionService
 from app.services.llm_service import LLMService, _limpiar, system_prompt
 from app.services.mcp_client import llamar_tool, listar_tools_openai
@@ -218,6 +220,7 @@ class ChatbotAgent:
         self.user_service = UserService()
         self.conversaciones = ConversacionService()
         self.dashboard = DashboardAgent()
+        self.entrenamiento = EntrenamientoAgent()
 
     # ------------------------------------------------------------------ público
 
@@ -244,6 +247,26 @@ class ChatbotAgent:
                 usuario_id, intencion, clave_discapacidad, authorization, mensaje,
                 roles=roles or [], perfil=perfil,
             )
+
+        comando = detectar_comando_entrenamiento(mensaje)
+        if comando:
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": comando, "estado": "ejecutando"}
+                )
+            resultado = await self.entrenamiento.procesar(
+                comando,
+                usuario_id,
+                mensaje,
+                clave_discapacidad,
+                authorization=authorization,
+                perfil_usuario=perfil,
+            )
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": comando, "estado": "listo"}
+                )
+            return resultado
 
         # Escrituras reales: propuesta local + Confirmo → MCP (el LLM no llama la tool).
         if intencion in ("bloquear_usuario", "cancelar_inscripcion"):

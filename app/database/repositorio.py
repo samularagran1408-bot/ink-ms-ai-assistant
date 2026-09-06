@@ -21,6 +21,8 @@ COL_PLANES = "planes_entrenamiento"
 COL_SESIONES_RPE = "sesiones_rpe"
 COL_ALERTAS = "alertas_entrenador"
 COL_MODO_COMPETENCIA = "modo_competencia"
+COL_ENTRENAMIENTO = "perfil_entrenamiento"
+COL_EVALUACIONES_RIESGO = "evaluaciones_riesgo"
 
 CAMPOS_EJERCICIO = ("id", "nombre", "fase", "series", "nivel", "posicion")
 
