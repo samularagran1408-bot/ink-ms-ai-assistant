@@ -6,7 +6,13 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from app.database.mongodb import get_db
-from app.database.repositorio import COL_CONVERSACIONES, COL_ENTRENAMIENTO, COL_PLANES, COL_SESIONES_RPE
+from app.database.repositorio import (
+    COL_CONVERSACIONES,
+    COL_ENTRENAMIENTO,
+    COL_EVALUACIONES_RIESGO,
+    COL_PLANES,
+    COL_SESIONES_RPE,
+)
 from app.services.reports_service import ReportsService
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
@@ -164,7 +170,27 @@ class HistorialAgent:
                 {"usuario_id": usuario_id}, {"_id": 0}
             ).to_list(length=200)
             for d in docs:
-                filas.append({**d, "origen": "rpe"})
+                filas.append({**d, "origen": d.get("origen") or "rpe"})
+        except Exception:
+            pass
+        vistos = {(str(d.get("fecha")), d.get("rpe")) for d in filas}
+        try:
+            evals = await db[COL_EVALUACIONES_RIESGO].find(
+                {"usuario_id": usuario_id, "rpe_reciente": {"$ne": None}},
+                {"_id": 0, "fecha": 1, "rpe_reciente": 1},
+            ).to_list(length=200)
+            for d in evals:
+                clave = (str(d.get("fecha")), d.get("rpe_reciente"))
+                if clave in vistos:
+                    continue
+                filas.append(
+                    {
+                        "fecha": d.get("fecha"),
+                        "rpe": d.get("rpe_reciente"),
+                        "origen": "riesgo",
+                    }
+                )
+                vistos.add(clave)
         except Exception:
             pass
         try:

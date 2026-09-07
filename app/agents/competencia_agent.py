@@ -588,18 +588,12 @@ SOLO JSON:
             recomendaciones=analisis.get("recomendaciones") or [],
         )
 
-        prompt = f"""
-Redacta un cierre breve (máx 3 frases) para un atleta inclusivo en modo competencia.
-Discapacidad: {discapacidad}. Objetivo: {objetivo_txt}. Semanas: {semanas}.
-Evento: {json.dumps(proximo or {}, ensure_ascii=False, default=str)}.
-Sólo texto plano, sin JSON.
-"""
-        nota_llm = await self.llm.texto(prompt, canonizar(discapacidad))
-
         ahora = datetime.now(timezone.utc).isoformat()
         evento_item = self._item_evento(proximo)
+        usuario_email = usuario.get("email")
         estado = {
             "usuario_id": usuario_id,
+            "email": usuario_email,
             "activo": True,
             "evento_id": (proximo or {}).get("id") or evento_id,
             "evento_snapshot": evento_item,
@@ -612,13 +606,13 @@ Sólo texto plano, sin JSON.
             "sesiones_hechas": [],
         }
         await self._guardar_modo(usuario_id, estado)
+        nota = plan.get("nota_local")
 
         analisis_base = {
             "ventajas": (analisis.get("ventajas") or [])[:3],
             "desventajas": (analisis.get("desventajas") or [])[:3],
             "recomendaciones": (analisis.get("recomendaciones") or [])[:3],
         }
-        nota = nota_llm or plan.get("nota_local")
         progreso_panel = analisis.get("progreso_panel") or {}
         plan_prog = progreso_plan_desde_doc(estado)
         inscritos_rutina = rutinas_inscritas_vista(analisis.get("rutinas_usuario") or [])
@@ -1116,7 +1110,13 @@ Sólo texto plano, sin JSON.
             return {"usuario_id": usuario_id, "activo": False}
         try:
             doc = await db[COL_MODO_COMPETENCIA].find_one(
-                {"usuario_id": usuario_id}, {"_id": 0}
+                {
+                    "$or": [
+                        {"usuario_id": usuario_id},
+                        {"email": usuario_id},
+                    ]
+                },
+                {"_id": 0},
             )
             return doc or {"usuario_id": usuario_id, "activo": False}
         except Exception:
@@ -1126,12 +1126,26 @@ Sólo texto plano, sin JSON.
         """Persiste (upsert) el estado del modo competencia en Mongo."""
         db = get_db()
         if db is None:
-            return
+            raise CompetenciaAccionError(
+                503, "No hay persistencia: no se pudo guardar el modo competencia."
+            )
         try:
+            clave = {"usuario_id": usuario_id}
+            if doc.get("email"):
+                existente = await db[COL_MODO_COMPETENCIA].find_one(
+                    {"$or": [{"usuario_id": usuario_id}, {"email": doc.get("email")}]},
+                    {"usuario_id": 1},
+                )
+                if existente and existente.get("usuario_id"):
+                    clave = {"usuario_id": existente["usuario_id"]}
             await db[COL_MODO_COMPETENCIA].update_one(
-                {"usuario_id": usuario_id},
+                clave,
                 {"$set": doc},
                 upsert=True,
             )
+        except CompetenciaAccionError:
+            raise
         except Exception as exc:
-            print(f"No se pudo persistir modo competencia: {exc}")
+            raise CompetenciaAccionError(
+                503, "No se pudo guardar el modo competencia."
+            ) from exc

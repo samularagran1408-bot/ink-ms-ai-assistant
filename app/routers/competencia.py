@@ -107,6 +107,8 @@ async def modo_competencia(
             semanas=body.semanas,
             authorization=ctx.authorization,
         )
+    except CompetenciaAccionError as exc:
+        raise _accion_http(exc) from exc
     except HTTPException:
         raise
     except Exception as e:

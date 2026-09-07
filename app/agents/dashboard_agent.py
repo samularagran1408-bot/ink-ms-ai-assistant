@@ -8,7 +8,6 @@ from app.agents.competencia_agent import progreso_plan_desde_doc
 from app.agents.historial_agent import HistorialAgent
 from app.agents.riesgo_agent import RiesgoAgent
 from app.database.mongodb import get_db
-from app.database.repositorio import COL_SESIONES_RPE
 from app.services.reports_service import ReportsService
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
@@ -56,6 +55,7 @@ class DashboardAgent:
                 dias_sin_descanso=0,
                 authorization=authorization,
                 perfil=perfil,
+                persistir=False,
             )
             nivel = (riesgo_snap or {}).get("nivel") or (riesgo_snap or {}).get("riesgo")
             if nivel and str(nivel).lower() in ("alto", "high", "critico", "crítico"):
@@ -116,19 +116,15 @@ class DashboardAgent:
         }
 
     async def _ultimo_rpe(self, usuario_id: str) -> Optional[float]:
-        """Devuelve el RPE más reciente del atleta, o None si no hay registros."""
-        db = get_db()
-        if db is None:
+        """Devuelve el RPE más reciente (sesiones o evaluaciones de riesgo)."""
+        filas = await self.historial._rpe_usuario(usuario_id)
+        if not filas:
             return None
+        filas = sorted(filas, key=lambda row: str(row.get("fecha") or ""), reverse=True)
         try:
-            docs = await db[COL_SESIONES_RPE].find(
-                {"usuario_id": usuario_id}, {"_id": 0, "rpe": 1, "fecha": 1}
-            ).sort("fecha", -1).to_list(length=1)
-            if docs and docs[0].get("rpe") is not None:
-                return float(docs[0]["rpe"])
-        except Exception:
+            return float(filas[0]["rpe"])
+        except (TypeError, ValueError, KeyError):
             return None
-        return None
 
     async def _modo_competencia(self, usuario_id: str) -> dict[str, Any]:
         """Lee el modo competencia persistido y adjunta % del plan. `{activo: False}` si no hay."""
@@ -137,7 +133,8 @@ class DashboardAgent:
             return {"activo": False}
         try:
             doc = await db[COL_MODO_COMPETENCIA].find_one(
-                {"usuario_id": usuario_id}, {"_id": 0}
+                {"$or": [{"usuario_id": usuario_id}, {"email": usuario_id}]},
+                {"_id": 0},
             )
             if not doc:
                 return {"activo": False}

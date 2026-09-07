@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.database.mongodb import get_db
-from app.database.repositorio import COL_EVALUACIONES_RIESGO
+from app.database.repositorio import COL_EVALUACIONES_RIESGO, COL_SESIONES_RPE
 from app.motor.cuerpo import mapa_corporal
 from app.nlp.discapacidad import canonizar, descripcion
 from app.services.sports_service import SportsService
@@ -31,6 +31,7 @@ class RiesgoAgent:
         authorization: Optional[str] = None,
         perfil: Optional[dict[str, Any]] = None,
         limitacion: Optional[str] = None,
+        persistir: bool = True,
     ) -> dict[str, Any]:
         """Calcula score 0–100 y nivel (bajo/moderado/alto) a partir del perfil y la carga.
 
@@ -127,7 +128,8 @@ class RiesgoAgent:
             if (dolor_reportado or (limitacion or "").strip())
             else None,
         }
-        await self._guardar_evaluacion(resultado)
+        if persistir:
+            await self._guardar_evaluacion(resultado)
         return resultado
 
     async def listar_historial(self, usuario_id: str, limite: int = 20) -> list[dict[str, Any]]:
@@ -181,6 +183,18 @@ class RiesgoAgent:
         try:
             guardar = {k: v for k, v in doc.items() if k != "cuerpo"}
             await db[COL_EVALUACIONES_RIESGO].insert_one(guardar)
+            if doc.get("rpe_reciente") is not None:
+                await db[COL_SESIONES_RPE].insert_one(
+                    {
+                        "usuario_id": doc.get("usuario_id"),
+                        "email": doc.get("email"),
+                        "rpe": doc.get("rpe_reciente"),
+                        "fecha": doc.get("fecha"),
+                        "origen": "riesgo",
+                        "evaluacion_id": doc.get("id"),
+                        "rf": "RF43",
+                    }
+                )
         except Exception as exc:
             print(f"No se pudo guardar evaluación de riesgo: {exc}")
 
