@@ -116,7 +116,19 @@ class PlanesAgent:
                     for e in (rutina.get("ejercicios") or [])
                     if e.get("nombre")
                 )
+                ejercicios = [
+                    {
+                        "nombre": e.get("nombre"),
+                        "series": e.get("series"),
+                        "repeticiones": e.get("repeticiones"),
+                        "fase": e.get("fase"),
+                        "instrucciones": e.get("instrucciones"),
+                    }
+                    for e in (rutina.get("ejercicios") or [])
+                    if e.get("nombre")
+                ]
                 sesiones.append({
+                    "id": f"s{semana}d{dia}",
                     "semana": semana,
                     "sesion": dia,
                     "enfoque": enfoque,
@@ -125,6 +137,7 @@ class PlanesAgent:
                     "objetivo_clave": rutina.get("objetivo_clave"),
                     "duracion_estimada_minutos": rutina["duracion_estimada_minutos"],
                     "total_ejercicios": rutina["total_ejercicios"],
+                    "ejercicios": ejercicios,
                     "bloques": rutina["bloques"],
                     "material_necesario": rutina["material_necesario"],
                     "recomendaciones": rutina["recomendaciones"][:3],

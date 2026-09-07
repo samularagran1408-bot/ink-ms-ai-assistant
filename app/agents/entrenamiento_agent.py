@@ -299,13 +299,16 @@ class EntrenamientoAgent:
         perfil["plan_id"] = plan.get("plan_id")
         sesiones = plan.get("sesiones") or []
         preview = []
-        for s in sesiones[:6]:
+        for s in sesiones:
             preview.append({
+                "id": s.get("id"),
                 "semana": s.get("semana"),
                 "sesion": s.get("sesion"),
                 "enfoque": s.get("enfoque"),
                 "nombre": s.get("nombre"),
                 "duracion_estimada_minutos": s.get("duracion_estimada_minutos"),
+                "total_ejercicios": s.get("total_ejercicios"),
+                "ejercicios": s.get("ejercicios") or [],
             })
         texto = (
             f"Plan personalizado listo: {plan.get('semanas')} semanas, "
