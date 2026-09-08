@@ -51,6 +51,9 @@ def test_intenciones_reconocen_frases_naturales():
         "exporta como pdf": "exportar_pdf",
         "crea un evento de natación": "crear_evento",
         "mi progreso": "progreso",
+        "Crea un deporte de running": "crear_deporte",
+        "Publica una rutina de fuerza": "crear_rutina",
+        "¿Qué adaptaciones tiene la natación?": "adaptaciones",
     }
     fallos = []
     for mensaje, intencion in esperado.items():

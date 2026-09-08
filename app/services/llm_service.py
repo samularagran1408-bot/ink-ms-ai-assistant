@@ -127,13 +127,24 @@ _SIN_CLAVE = ("ollama",)
 
 _ANFITRIONES_LOCALES = ("ollama", "localhost", "127.0.0.1", "host.docker.internal", ":11434")
 
-# Si el modelo free elegido está saturado upstream (429), se prueba esta lista.
-# `openrouter/free` ya reparte entre free; los demás son respaldo explícito.
+def _es_modelo_free(modelo: str) -> bool:
+    """True si el slug consume la cuota diaria :free de OpenRouter."""
+    m = (modelo or "").strip()
+    return m.endswith(":free") or m in {"openrouter/free", "free"}
+
+
+# :free vigentes (rotan; 404 = ya no son free). Tras agotar cupo diario se
+# prueba un modelo de pago muy barato: la cuota :free es compartida.
 _FALLBACKS_OPENROUTER = (
-    "openrouter/free",
-    "openai/gpt-oss-20b:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "inclusionai/ling-3.0-flash:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "liquid/lfm-2.5-2.6b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "inclusionai/ling-3.0-flash-fin:free",
+    "nex-agi/nex-n2.5-mini:free",
+)
+_FALLBACKS_OPENROUTER_PAGO = (
+    "openai/gpt-oss-20b",
+    "qwen/qwen3.7-flash",
 )
 
 
@@ -142,12 +153,52 @@ def _es_url_local(url: str) -> bool:
     return bool(url) and any(a in url for a in _ANFITRIONES_LOCALES)
 
 
+def _es_modelo_reintentable(status: int, cuerpo: str) -> bool:
+    """True si conviene probar el siguiente modelo (429, modelo inválido, 5xx)."""
+    if _es_rate_limit(status, cuerpo):
+        return True
+    if status in {400, 404, 408, 422, 502, 503, 524}:
+        return True
+    bajo = (cuerpo or "").lower()
+    return any(
+        t in bajo
+        for t in ("not found", "no endpoints", "is not a valid", "unknown model")
+    )
+
+
 def _es_rate_limit(status: int, cuerpo: str) -> bool:
     """Detecta HTTP 429 o mensajes de rate-limit en el cuerpo de error."""
     if status == 429:
         return True
     bajo = (cuerpo or "").lower()
     return "rate-limited" in bajo or "rate limit" in bajo
+
+
+def _es_cuota_free_diaria(status: int, cuerpo: str) -> bool:
+    """True si OpenRouter cortó todos los :free (cupo diario/minuto, no un modelo)."""
+    if not _es_rate_limit(status, cuerpo):
+        return False
+    bajo = (cuerpo or "").lower()
+    return any(
+        t in bajo
+        for t in (
+            "free-models-per-day",
+            "free-models-per-min",
+            "free_tier",
+            "openrouter_free_tier",
+        )
+    )
+
+
+def _segundos_hasta_reset_cuota(cuerpo: str) -> int:
+    """Lee X-RateLimit-Reset del JSON de OpenRouter; si no, 1 h (máx. 24 h)."""
+    match = re.search(r"X-RateLimit-Reset\"\s*:\s*\"?(\d+)", cuerpo or "")
+    if match:
+        crudo = int(match.group(1))
+        reset_epoch = crudo / 1000.0 if crudo > 10_000_000_000 else float(crudo)
+        restante = int(reset_epoch - time.time())
+        return max(60, min(restante, 86_400))
+    return 3600
 
 
 def _es_tools_no_soportado(status: int, cuerpo: str) -> bool:
@@ -172,6 +223,7 @@ class LLMService:
 
     # Estado compartido por todas las instancias (una por agente)
     _bloqueado_hasta: float = 0.0
+    _free_cuota_hasta: float = 0.0
     _ultimo_error: Optional[str] = None
     _ultimo_exito: Optional[float] = None
     _llamadas_ok: int = 0
@@ -263,14 +315,21 @@ class LLMService:
         )
 
     def _modelos_a_probar(self) -> list[str]:
-        """Modelo configurado primero; en OpenRouter, fallbacks si hay 429 upstream."""
+        """Modelo configurado primero; en OpenRouter, :free vigentes y pago barato."""
         primario = self.model
         if self.proveedor != "openrouter" or not primario:
             return [primario] if primario else []
-        extras = [m for m in _FALLBACKS_OPENROUTER if m != primario]
-        return [primario, *extras]
+        sin_free = time.time() < LLMService._free_cuota_hasta
+        orden: list[str] = []
+        for modelo in (primario, *_FALLBACKS_OPENROUTER, *_FALLBACKS_OPENROUTER_PAGO):
+            if not modelo or modelo in orden:
+                continue
+            if sin_free and _es_modelo_free(modelo):
+                continue
+            orden.append(modelo)
+        return orden
 
-    def _validar_listo(self) -> None:
+    def _validar_listo(self, *, ignorar_pausa: bool = False) -> None:
         """Lanza RuntimeError si el LLM está deshabilitado, mal configurado o en pausa."""
         if not self.habilitado:
             raise RuntimeError("LLM deshabilitado (LLM_ENABLED=false)")
@@ -278,7 +337,7 @@ class LLMService:
             raise RuntimeError("LLM sin clave configurada (LLM_API_KEY)")
         if not self.api_url or not self.model:
             raise RuntimeError("LLM sin URL o modelo configurados")
-        if time.monotonic() < LLMService._bloqueado_hasta:
+        if not ignorar_pausa and time.monotonic() < LLMService._bloqueado_hasta:
             restante = int(LLMService._bloqueado_hasta - time.monotonic())
             raise RuntimeError(
                 f"LLM en pausa {restante}s tras un fallo previo: {LLMService._ultimo_error}"
@@ -326,14 +385,15 @@ class LLMService:
         max_tokens: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
+        ignorar_pausa: bool = False,
     ) -> ChatCompletionResult:
         """Llama al proveedor (POST a la URL de /v1/chat/completions) y devuelve texto y/o tool_calls.
 
-        Prueba el modelo configurado y, en OpenRouter, fallbacks si hay rate-limit.
-        El llamador recibe un ``ChatCompletionResult``; si el proveedor falla,
-        se activa el cortacircuitos y se lanza ``RuntimeError``.
+        Prueba el modelo configurado y, en OpenRouter, fallbacks si hay rate-limit
+        o el modelo no existe. El llamador recibe un ``ChatCompletionResult``; si
+        el proveedor falla, se activa el cortacircuitos y se lanza ``RuntimeError``.
         """
-        self._validar_listo()
+        self._validar_listo(ignorar_pausa=ignorar_pausa)
         headers = self._headers()
         ultimo_error = ""
         modelos = self._modelos_a_probar()
@@ -341,6 +401,8 @@ class LLMService:
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for i, modelo in enumerate(modelos):
+                if _es_modelo_free(modelo) and time.time() < LLMService._free_cuota_hasta:
+                    continue
                 payload: dict[str, Any] = {
                     "messages": mensajes,
                     "model": modelo,
@@ -374,17 +436,25 @@ class LLMService:
                         print(f"LLM: {self.model} falló; respondió {modelo}")
                     return resultado
 
-                detalle = respuesta.text[:300]
-                ultimo_error = f"HTTP {respuesta.status_code}: {detalle}"
-                # Modelo sin soporte de tools: no activar cortacircuitos global
-                # (el chat puede seguir usando LLM sin tools / motor local).
+                detalle = respuesta.text[:800]
+                ultimo_error = f"HTTP {respuesta.status_code}: {detalle[:300]}"
                 if usar_tools and _es_tools_no_soportado(respuesta.status_code, detalle):
                     raise RuntimeError(f"LLM sin soporte de tools: {ultimo_error}")
-                if (
-                    _es_rate_limit(respuesta.status_code, detalle)
+                if _es_cuota_free_diaria(respuesta.status_code, detalle):
+                    espera = _segundos_hasta_reset_cuota(detalle)
+                    LLMService._free_cuota_hasta = time.time() + espera
+                    print(
+                        f"LLM cuota :free agotada ~{espera}s; "
+                        "sigo con modelo de pago barato si hay..."
+                    )
+                    if i < len(modelos) - 1:
+                        continue
+                elif (
+                    respuesta.status_code not in {401, 403, 402}
+                    and _es_modelo_reintentable(respuesta.status_code, detalle)
                     and i < len(modelos) - 1
                 ):
-                    print(f"LLM {modelo} rate-limited; probando alternativa...")
+                    print(f"LLM {modelo} {ultimo_error[:80]}; probando alternativa...")
                     continue
                 self._registrar_fallo(ultimo_error)
                 raise RuntimeError(f"LLM {ultimo_error}")
@@ -399,6 +469,7 @@ class LLMService:
         max_tokens: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
+        ignorar_pausa: bool = False,
     ) -> str:
         """Consulta al LLM; si hay tools, ignora tool_calls y solo devuelve texto."""
         resultado = await self.completar(
@@ -407,6 +478,7 @@ class LLMService:
             max_tokens=max_tokens,
             tools=tools,
             tool_choice=tool_choice,
+            ignorar_pausa=ignorar_pausa,
         )
         if resultado.content:
             return resultado.content
@@ -448,12 +520,21 @@ class LLMService:
         mensajes: list[dict[str, Any]],
         temperatura: float = 0.7,
         max_tokens: Optional[int] = None,
+        ignorar_pausa: bool = False,
     ) -> Optional[str]:
-        """Como ``chat_mensajes`` pero devuelve None si el LLM no está disponible o falla."""
-        if not self.disponible:
+        """Como ``chat_mensajes`` pero devuelve None si el LLM no está configurado o falla.
+
+        ``ignorar_pausa=True`` reintenta aunque el cortacircuitos esté activo
+        (chat abierto: el usuario espera una respuesta, no un menú).
+        """
+        if not self.is_configured:
+            return None
+        if not ignorar_pausa and not self.disponible:
             return None
         try:
-            respuesta = await self.chat_mensajes(mensajes, temperatura, max_tokens)
+            respuesta = await self.chat_mensajes(
+                mensajes, temperatura, max_tokens, ignorar_pausa=ignorar_pausa
+            )
         except Exception as exc:
             print(f"LLM no disponible: {exc}")
             return None

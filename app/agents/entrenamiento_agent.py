@@ -407,18 +407,35 @@ class EntrenamientoAgent:
                 )
             except Exception:
                 dash = {}
+        vista = dash.get("vista") if isinstance(dash.get("vista"), dict) else {}
         sesiones = perfil.get("sesiones_cerradas") or []
-        texto = (
-            "Dashboard de métricas: progreso, RPE de tus sesiones y predicción de riesgo "
-            "en el panel del asistente. "
-        )
-        if sesiones:
-            texto += f"Sesiones registradas con el agente: {len(sesiones)}."
-        else:
-            texto += "Cuando registres RPE o cierres sesiones, aquí verás la evolución."
+        if not vista:
+            ultimo_rpe = None
+            if sesiones:
+                ultimo_rpe = sesiones[-1].get("rpe")
+            vista = {
+                "perfil": {"nombre": (usuario or {}).get("fullName") or "tu perfil"},
+                "kpis": [
+                    {"clave": "eventos", "label": "Eventos inscritos", "valor": 0, "icono": "calendar-days"},
+                    {"clave": "rutinas", "label": "Rutinas inscritas", "valor": 0, "icono": "heart"},
+                    {"clave": "rpe", "label": "RPE reciente", "valor": ultimo_rpe if ultimo_rpe is not None else "—", "icono": "bolt"},
+                    {
+                        "clave": "sesiones",
+                        "label": "Sesiones con el agente",
+                        "valor": len(sesiones),
+                        "icono": "chart-bar",
+                    },
+                ],
+            }
+            dash = {"vista": vista}
+        texto = self.dashboard.resumen_texto(dash)
+        if sesiones and "Sesiones" not in texto:
+            texto += f" Sesiones registradas con el agente: {len(sesiones)}."
         return texto, {
             "caso_prueba": "CP21-HU45",
-            "dashboard": dash.get("vista") or dash,
+            "dashboard": vista,
+            "vista": vista,
+            "estadisticas": vista,
             "graficos": True,
             "sugerencias": ["Dashboard de métricas y predicciones"],
         }
@@ -633,8 +650,8 @@ class EntrenamientoAgent:
             "sugerencias": ["Sugiere configuración de accesibilidad"],
         }
 
-    async def _modo_competencia(self, perfil, mensaje, _disc, authorization, _user):
-        doc = {"activo": True, "objetivo": mensaje, "semanas": 3}
+    async def _modo_competencia(self, perfil, mensaje, discapacidad, authorization, _user):
+        doc: dict[str, Any] = {}
         if authorization:
             try:
                 doc = await self.competencia.activar_modo(
@@ -645,15 +662,47 @@ class EntrenamientoAgent:
                     authorization=authorization,
                 )
             except Exception:
-                pass
+                doc = {}
+        plan = doc.get("plan") if isinstance(doc.get("plan"), dict) else {}
+        if not plan:
+            plan = self.competencia._plan_preparacion(
+                discapacidad=discapacidad or "general",
+                semanas=3,
+                evento=(doc.get("evento_objetivo") if isinstance(doc, dict) else None),
+                objetivo=(doc.get("objetivo") if isinstance(doc, dict) else None)
+                or "Preparación competitiva general",
+                recomendaciones=[],
+            )
+            doc = {**(doc if isinstance(doc, dict) else {}), "activo": True, "plan": plan, "semanas": 3}
         perfil["modo_competencia"] = True
-        texto = (
-            "Modo competencia activado. Puedes medirte contra tu historial "
-            "y contra el calendario de eventos compatibles con tu perfil."
-        )
-        return texto, {
+        semanas = doc.get("semanas") or plan.get("semanas") or 3
+        objetivo = doc.get("objetivo") or plan.get("objetivo") or "preparación competitiva"
+        lineas = [
+            f"Modo competencia activado. Plan de {semanas} semanas: {objetivo}."
+        ]
+        for fase in (plan.get("fases") or [])[:3]:
+            if not isinstance(fase, dict):
+                continue
+            lineas.append(
+                f"- Semana {fase.get('semana')}: {fase.get('foco')} "
+                f"(intensidad {fase.get('intensidad')}, "
+                f"{fase.get('sesiones_sugeridas')} sesiones)."
+            )
+        checks: list[str] = []
+        for item in (plan.get("checklist") or [])[:4]:
+            if isinstance(item, dict) and item.get("texto"):
+                checks.append(str(item["texto"]))
+            elif isinstance(item, str):
+                checks.append(item)
+        if checks:
+            lineas.append("Checklist: " + "; ".join(checks))
+        if plan.get("nota_local"):
+            lineas.append(str(plan["nota_local"]))
+        return "\n".join(lineas), {
             "caso_prueba": "CP29-HU49",
             "modo_competencia": doc,
+            "plan": plan,
+            "vista": doc.get("vista") or {},
             "sugerencias": ["Competir contra mi historial"],
         }
 

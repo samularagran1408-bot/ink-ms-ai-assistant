@@ -243,6 +243,23 @@ async def chat_stream(
 # Alias:        /sessions  (Postman / front que usen ese nombre)
 
 
+def _ids_alias(ctx) -> list[str]:
+    """Ids extra con los que pudo persistirse el historial (email vs uuid)."""
+    extra: list[str] = []
+    perfil = getattr(ctx, "perfil", None) or {}
+    for valor in (
+        getattr(ctx, "email", None),
+        perfil.get("id"),
+        perfil.get("userId"),
+        perfil.get("user_id"),
+        perfil.get("sub"),
+    ):
+        texto = str(valor or "").strip()
+        if texto and texto != str(ctx.id) and texto not in extra:
+            extra.append(texto)
+    return extra
+
+
 async def _listar_hilos(
     authorization: Optional[str],
     incluir_archivadas: bool,
@@ -251,7 +268,14 @@ async def _listar_hilos(
     """Lista los hilos del usuario autenticado (activas o también archivadas)."""
     ctx = await resolver_contexto(authorization, require_auth=True)
     items = await conversaciones.listar(
-        ctx.id, incluir_archivadas=incluir_archivadas, limite=limite
+        ctx.id,
+        incluir_archivadas=incluir_archivadas,
+        limite=limite,
+        ids_alias=_ids_alias(ctx),
+    )
+    print(
+        f"GET conversaciones: {len(items)} hilos (limite={limite})",
+        flush=True,
     )
     return _lista_hilos(ctx.id, items)
 
@@ -259,7 +283,7 @@ async def _listar_hilos(
 async def _obtener_hilo(hilo_id: str, authorization: Optional[str]):
     """Devuelve una conversación del usuario o 404 si no existe."""
     ctx = await resolver_contexto(authorization, require_auth=True)
-    doc = await conversaciones.obtener(ctx.id, hilo_id)
+    doc = await conversaciones.obtener(ctx.id, hilo_id, ids_alias=_ids_alias(ctx))
     if not doc:
         raise HTTPException(status_code=404, detail="Conversación no encontrada")
     # Alias session_id en la respuesta
@@ -270,7 +294,7 @@ async def _obtener_hilo(hilo_id: str, authorization: Optional[str]):
 async def _borrar_hilo(hilo_id: str, authorization: Optional[str]):
     """Elimina una conversación del usuario; 404 si el id no pertenece al token."""
     ctx = await resolver_contexto(authorization, require_auth=True)
-    ok = await conversaciones.borrar(ctx.id, hilo_id)
+    ok = await conversaciones.borrar(ctx.id, hilo_id, ids_alias=_ids_alias(ctx))
     if not ok:
         raise HTTPException(status_code=404, detail="Conversación no encontrada")
     return {"ok": True, "conversacion_id": hilo_id, "session_id": hilo_id}

@@ -82,3 +82,47 @@ class ReportsService:
             params["endDate"] = end_date
         datos = await self._get("/api/dashboard", authorization, params or None)
         return datos if isinstance(datos, dict) else {}
+
+    async def _panel(
+        self,
+        suffix: str,
+        authorization: Optional[str] = None,
+        params: Optional[dict] = None,
+    ) -> dict:
+        """GET ``/api/dashboard{suffix}``. Dict o ``{}``."""
+        datos = await self._get(f"/api/dashboard{suffix}", authorization, params)
+        return datos if isinstance(datos, dict) else {}
+
+    async def dashboard_asociaciones(self, authorization: Optional[str] = None) -> dict:
+        """Panel asociaciones: ``GET /api/dashboard/associations`` (admin/entrenador)."""
+        return await self._panel("/associations", authorization)
+
+    async def dashboard_organizador(
+        self,
+        organizer_id: Optional[str] = None,
+        authorization: Optional[str] = None,
+    ) -> dict:
+        """Panel organizador: ``GET /api/dashboard/organizer``."""
+        params = {"organizerId": organizer_id} if organizer_id else None
+        return await self._panel("/organizer", authorization, params)
+
+    async def dashboard_entrenador(
+        self,
+        trainer_id: Optional[str] = None,
+        authorization: Optional[str] = None,
+    ) -> dict:
+        """Panel entrenador: ``GET /api/dashboard/trainer``."""
+        params = {"trainerId": trainer_id} if trainer_id else None
+        return await self._panel("/trainer", authorization, params)
+
+    async def dashboard_atletas(
+        self,
+        authorization: Optional[str] = None,
+        organizer_id: Optional[str] = None,
+        all_events: bool = False,
+    ) -> dict:
+        """Panel atletas: ``GET /api/dashboard/athletes``."""
+        params: dict[str, str] = {"allEvents": "true" if all_events else "false"}
+        if organizer_id:
+            params["organizerId"] = organizer_id
+        return await self._panel("/athletes", authorization, params)

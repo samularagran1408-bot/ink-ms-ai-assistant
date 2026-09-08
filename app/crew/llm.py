@@ -15,11 +15,11 @@ from app.services.llm_service import LLMService
 # `openrouter/free` no es un slug de LiteLLM. Varios :free van a 429;
 # el crew prueba esta lista en orden (igual espíritu que LLMService).
 _FALLBACKS_OPENROUTER_CREW = (
-    "openrouter/inclusionai/ling-3.0-flash-fin:free",
-    "openrouter/liquid/lfm-2.5-2.6b:free",
-    "openrouter/minimax/minimax-m2.7:free",
     "openrouter/google/gemma-4-26b-a4b-it:free",
-    "openrouter/z-ai/glm-5.2:free",
+    "openrouter/liquid/lfm-2.5-2.6b:free",
+    "openrouter/nvidia/nemotron-3.5-lightning:free",
+    "openrouter/inclusionai/ling-3.0-flash-fin:free",
+    "openrouter/openai/gpt-oss-20b",
 )
 
 

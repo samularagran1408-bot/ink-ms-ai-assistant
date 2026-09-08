@@ -36,6 +36,15 @@ def _recortar(texto: str, max_chars: int) -> str:
     return t[: max_chars - 1].rstrip() + "…"
 
 
+def _iso(valor: Any) -> Any:
+    """ISO-8601 si es datetime; si no, el valor tal cual (JSON-safe)."""
+    if isinstance(valor, datetime):
+        if valor.tzinfo is None:
+            valor = valor.replace(tzinfo=timezone.utc)
+        return valor.isoformat()
+    return valor
+
+
 def _titulo_desde_mensaje(mensaje: str) -> str:
     """Deriva un título corto (máx. 60 caracteres) a partir del primer mensaje."""
     limpio = " ".join((mensaje or "").split())
@@ -203,6 +212,7 @@ class ConversacionService:
                 "titulo": titulo,
                 "resumen": resumen,
                 "total_mensajes": len(todos),
+                "usuario_id": usuario_id,
             }
             update: dict[str, Any] = {
                 "$set": set_doc,
@@ -255,16 +265,18 @@ class ConversacionService:
         *,
         incluir_archivadas: bool = False,
         limite: int = 20,
+        ids_alias: Optional[list[str]] = None,
     ) -> list[dict[str, Any]]:
         """Lista metadatos de conversaciones del usuario (sin el cuerpo de mensajes).
 
         Por defecto solo activas, ordenadas por última interacción. ``limite`` se
         acota entre 1 y 50. Devuelve lista vacía si Mongo no está o falla.
+        ``ids_alias`` permite encontrar hilos guardados con email u otro id.
         """
         db = get_db()
         if db is None:
             return []
-        filtro: dict[str, Any] = {"usuario_id": usuario_id}
+        filtro: dict[str, Any] = dict(self._filtro_usuario(usuario_id, ids_alias))
         if not incluir_archivadas:
             filtro["estado"] = "activa"
         try:
@@ -277,10 +289,11 @@ class ConversacionService:
             return [
                 {
                     "conversacion_id": d.get("conversacion_id"),
+                    "session_id": d.get("conversacion_id"),
                     "titulo": d.get("titulo") or "Conversación",
                     "estado": d.get("estado") or "activa",
-                    "creada_en": d.get("creada_en"),
-                    "ultima_interaccion": d.get("ultima_interaccion"),
+                    "creada_en": _iso(d.get("creada_en")),
+                    "ultima_interaccion": _iso(d.get("ultima_interaccion")),
                     "total_mensajes": d.get("total_mensajes")
                     or d.get("turnos")
                     or 0,
@@ -293,14 +306,21 @@ class ConversacionService:
             return []
 
     async def obtener(
-        self, usuario_id: str, conversacion_id: str, *, max_mensajes: Optional[int] = None
+        self,
+        usuario_id: str,
+        conversacion_id: str,
+        *,
+        max_mensajes: Optional[int] = None,
+        ids_alias: Optional[list[str]] = None,
     ) -> Optional[dict[str, Any]]:
         """Devuelve una conversación con sus últimos mensajes y los límites de cupo.
 
         Si no existe, retorna ``None``. ``max_mensajes`` recorta la cola; si no se
         indica, usa el tope de persistencia.
         """
-        doc = await self._buscar_doc(usuario_id, conversacion_id, exigir_id=True)
+        doc = await self._buscar_doc(
+            usuario_id, conversacion_id, exigir_id=True, ids_alias=ids_alias
+        )
         if not doc:
             return None
         mensajes = doc.get("mensajes") or []
@@ -308,10 +328,11 @@ class ConversacionService:
         mensajes = mensajes[-tope:]
         return {
             "conversacion_id": doc.get("conversacion_id"),
+            "session_id": doc.get("conversacion_id"),
             "titulo": doc.get("titulo") or "Conversación",
             "estado": doc.get("estado"),
-            "creada_en": doc.get("creada_en"),
-            "ultima_interaccion": doc.get("ultima_interaccion"),
+            "creada_en": _iso(doc.get("creada_en")),
+            "ultima_interaccion": _iso(doc.get("ultima_interaccion")),
             "resumen": doc.get("resumen") or None,
             "total_mensajes": len(doc.get("mensajes") or []),
             "mensajes": [
@@ -320,7 +341,7 @@ class ConversacionService:
                     "remitente": m.get("remitente"),
                     "intencion": m.get("intencion"),
                     "fuente": m.get("fuente"),
-                    "fecha": m.get("fecha"),
+                    "fecha": _iso(m.get("fecha")),
                     "cards": m.get("cards") if isinstance(m.get("cards"), list) else [],
                     "sugerencias": m.get("sugerencias") if isinstance(m.get("sugerencias"), list) else [],
                     "cuerpo": m.get("cuerpo") if isinstance(m.get("cuerpo"), dict) else None,
@@ -334,14 +355,20 @@ class ConversacionService:
             },
         }
 
-    async def borrar(self, usuario_id: str, conversacion_id: str) -> bool:
+    async def borrar(
+        self,
+        usuario_id: str,
+        conversacion_id: str,
+        *,
+        ids_alias: Optional[list[str]] = None,
+    ) -> bool:
         """Elimina una conversación del usuario. True si se borró al menos un documento."""
         db = get_db()
         if db is None:
             return False
         try:
             res = await db[COL_CONVERSACIONES].delete_one(
-                {"usuario_id": usuario_id, "conversacion_id": conversacion_id}
+                {**self._filtro_usuario(usuario_id, ids_alias), "conversacion_id": conversacion_id}
             )
             return res.deleted_count > 0
         except Exception as exc:
@@ -411,12 +438,23 @@ class ConversacionService:
 
     # ------------------------------------------------------------------- helpers
 
+    def _filtro_usuario(
+        self, usuario_id: str, ids_alias: Optional[list[str]] = None
+    ) -> dict[str, Any]:
+        """Filtro por id de perfil y, si hay, email u otros alias con los que se guardó."""
+        ids = [usuario_id, *(ids_alias or [])]
+        limpios = list(dict.fromkeys(str(i).strip() for i in ids if i and str(i).strip()))
+        if len(limpios) <= 1:
+            return {"usuario_id": limpios[0] if limpios else usuario_id}
+        return {"usuario_id": {"$in": limpios}}
+
     async def _buscar_doc(
         self,
         usuario_id: str,
         conversacion_id: Optional[str],
         *,
         exigir_id: bool = False,
+        ids_alias: Optional[list[str]] = None,
     ) -> Optional[dict[str, Any]]:
         """Busca el documento de conversación en Mongo.
 
@@ -431,14 +469,13 @@ class ConversacionService:
             cid = (conversacion_id or "").strip()[:80]
             if cid:
                 return await db[COL_CONVERSACIONES].find_one(
-                    {"usuario_id": usuario_id, "conversacion_id": cid},
+                    {**self._filtro_usuario(usuario_id, ids_alias), "conversacion_id": cid},
                     {"_id": 0},
                 )
             if exigir_id:
                 return None
-            # Sin id: continúa la última conversación activa del usuario
             return await db[COL_CONVERSACIONES].find_one(
-                {"usuario_id": usuario_id, "estado": "activa"},
+                {**self._filtro_usuario(usuario_id, ids_alias), "estado": "activa"},
                 {"_id": 0},
                 sort=[("ultima_interaccion", -1)],
             )

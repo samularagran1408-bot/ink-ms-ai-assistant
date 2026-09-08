@@ -24,6 +24,83 @@ def test_extraer_destino_por_email():
     assert extraer_destino_bloqueo("Bloquear a ana@correo.com") == "ana@correo.com"
 
 
+def test_dificultad_deporte_enum_sports():
+    from app.agents.chatbot_agent import ChatbotAgent
+
+    assert ChatbotAgent._dificultad_deporte("intermedio") == "medio"
+    assert ChatbotAgent._dificultad_deporte("intermediate") == "medio"
+    assert ChatbotAgent._dificultad_deporte("bajo") == "bajo"
+    assert ChatbotAgent._dificultad_deporte("avanzado") == "alto"
+
+
+def test_llm_reintenta_modelo_invalido():
+    from app.services.llm_service import _es_modelo_reintentable
+
+    assert _es_modelo_reintentable(400, "is not a valid model") is True
+    assert _es_modelo_reintentable(429, "rate-limited") is True
+    assert _es_modelo_reintentable(401, "unauthorized") is False
+
+
+def test_cuota_free_diaria_salta_modelos_de_pago():
+    import time
+
+    from app.services.llm_service import (
+        LLMService,
+        _es_cuota_free_diaria,
+        _es_modelo_free,
+        _segundos_hasta_reset_cuota,
+    )
+
+    assert _es_modelo_free("google/gemma-4-26b-a4b-it:free") is True
+    assert _es_modelo_free("openai/gpt-oss-20b") is False
+    cuerpo = (
+        '{"error":{"message":"Rate limit exceeded: free-models-per-day",'
+        '"code":429,"metadata":{"headers":{"X-RateLimit-Reset":"1788912000000"}}}}'
+    )
+    assert _es_cuota_free_diaria(429, cuerpo) is True
+    assert _segundos_hasta_reset_cuota(cuerpo) >= 60
+    LLMService._free_cuota_hasta = time.time() + 3600
+    try:
+        svc = LLMService()
+        svc.proveedor = "openrouter"
+        svc.model = "google/gemma-4-26b-a4b-it:free"
+        modelos = svc._modelos_a_probar()
+        assert modelos
+        assert all(not m.endswith(":free") for m in modelos)
+        assert "openai/gpt-oss-20b" in modelos
+    finally:
+        LLMService._free_cuota_hasta = 0.0
+
+
+def test_intencion_floja_va_al_chat_abierto():
+    from app.agents.chatbot_agent import ChatbotAgent
+
+    assert ChatbotAgent._intencion_local_firme({"nombre": None, "confianza": 0.9}) is False
+    assert ChatbotAgent._intencion_local_firme({"nombre": "deportes", "confianza": 0.4}) is False
+    assert ChatbotAgent._intencion_local_firme({"nombre": "deportes", "confianza": 0.82}) is True
+    assert ChatbotAgent._intencion_local_firme({"nombre": "crear_deporte", "confianza": 0.4}) is True
+
+
+def test_respuesta_abierta_no_dice_no_entendi():
+    from app.agents.chatbot_agent import ChatbotAgent
+    from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
+
+    texto = ChatbotAgent._respuesta_abierta_sin_llm(
+        "¿cuál es la capital de Francia?", "general"
+    )
+    bajo = texto.lower()
+    assert "no entend" not in bajo
+    assert "se me escapa" not in bajo
+    assert "no logro" not in bajo
+    assert "vamos con" not in bajo
+    assert "capital francia" not in bajo
+    for frase in NO_ENTENDIDO + list(NO_ENTENDIDO_ADAPTADO.values()):
+        f = frase.lower()
+        assert "no entend" not in f
+        assert "se me escapa" not in f
+        assert "no estoy seguro" not in f
+
+
 def test_extraer_destino_por_nombre():
     dest = extraer_destino_bloqueo("Bloquear a Samu Lara porque no asiste")
     assert "samu" in dest.lower()

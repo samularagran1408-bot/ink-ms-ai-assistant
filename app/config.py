@@ -92,9 +92,10 @@ class Settings:
     # Kickoff CrewAI: varias iteraciones de LLM + tools. El front debe esperar esto.
     CREW_TIMEOUT_SEGUNDOS = _int("CREW_TIMEOUT_SEGUNDOS", 180)
 
-    # El chat flotante orquesta CrewAI en consulta/quiz/plan/investigación.
-    # false = comportamiento anterior (solo tool-calling + motor local).
-    CHAT_ORQUESTA_CREW = _bool("CHAT_ORQUESTA_CREW", True)
+    # El chat flotante no usa CrewAI: eventos/rutinas/quiz van al motor local
+    # (una llamada a Sports/Users). Crew sigue en POST /api/ai/crew.
+    # true = el widget espera kickoff + tools del LLM (lento con modelos :free).
+    CHAT_ORQUESTA_CREW = _bool("CHAT_ORQUESTA_CREW", False)
 
     # Las mutaciones del crew son SIEMPRE sandbox. CREW_WRITE_MODE=mcp se ignora
     # (ver app.crew.politica). El chat sigue escribiendo vía MCP con Confirmo.
@@ -107,9 +108,10 @@ class Settings:
     # por el motor local (más tokens). Por defecto solo pulimos casos difíciles.
     LLM_SINTESIS_INTENIONES_CONOCIDAS = _bool("LLM_SINTESIS_INTENIONES_CONOCIDAS", False)
 
-    # Tool-calling estilo OpenAI/MCP: el LLM elige tools; si falla → motor local.
-    LLM_TOOL_CALLING_ENABLED = _bool("LLM_TOOL_CALLING_ENABLED", True)
-    LLM_TOOL_MAX_RONDAS = _int("LLM_TOOL_MAX_RONDAS", 3)
+    # Tool-calling: el LLM lista MCP y decide tools. En modelos :free añade
+    # mucho tiempo; el motor local ya cubre eventos/deportes/rutinas.
+    LLM_TOOL_CALLING_ENABLED = _bool("LLM_TOOL_CALLING_ENABLED", False)
+    LLM_TOOL_MAX_RONDAS = _int("LLM_TOOL_MAX_RONDAS", 1)
 
     # Historial de chat: anti-basura en Mongo y en el prompt del LLM
     CHAT_MAX_MENSAJES_POR_CONVERSACION = _int("CHAT_MAX_MENSAJES_POR_CONVERSACION", 40)
@@ -119,7 +121,7 @@ class Settings:
     CHAT_RESUMEN_MAX_CHARS = _int("CHAT_RESUMEN_MAX_CHARS", 800)
 
     # Retención de datos efímeros (no toca catálogos ni modo competencia)
-    RETENCION_CHAT_HORAS = _int("RETENCION_CHAT_HORAS", 4)
+    RETENCION_CHAT_HORAS = _int("RETENCION_CHAT_HORAS", 720)
     RETENCION_QUIZ_ACTIVO_HORAS = _int("RETENCION_QUIZ_ACTIVO_HORAS", 4)
     RETENCION_QUIZ_EVALUADO_HORAS = _int("RETENCION_QUIZ_EVALUADO_HORAS", 2)
     RETENCION_ALERTAS_HORAS = _int("RETENCION_ALERTAS_HORAS", 4)

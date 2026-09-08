@@ -1,8 +1,8 @@
-"""El chat del producto orquesta CrewAI en intenciones de dominio.
+"""El chat del producto no usa CrewAI por defecto (CHAT_ORQUESTA_CREW=false).
 
-Saludos y FAQ siguen en el motor local. Las altas reales (crear evento,
-bloquear, etc.) siguen en MCP del chat con Confirmo. CrewAI cubre
-consulta, investigación, quiz y competencia.
+Eventos, rutinas y quiz van al motor local (Sports/Users). CrewAI queda en
+POST /api/ai/crew. Si se activa el flag, este puente cubre consulta,
+investigación, quiz y competencia. Las altas reales siguen en MCP + Confirmo.
 """
 
 from __future__ import annotations

@@ -20,6 +20,22 @@ def construir_cards(
     cards: list[dict[str, Any]] = []
     usados = herramientas_usadas or []
 
+    for kpi in datos.get("kpis") or []:
+        if not isinstance(kpi, dict):
+            continue
+        valor = kpi.get("valor")
+        cards.append(
+            {
+                "tipo": "kpi",
+                "tool": (herramientas_usadas or ["metricas_plataforma"])[0],
+                "titulo": str(kpi.get("titulo") or "Dato"),
+                "subtitulo": "" if valor is None else str(valor),
+                "meta": list(kpi.get("meta") or []),
+                "cta": kpi.get("cta")
+                or {"accion": "ver_estadisticas", "label": "Ver en el panel"},
+            }
+        )
+
     # Tool-calling anida el payload bajo el nombre de la tool.
     skip = {
         "modo",
@@ -39,6 +55,9 @@ def construir_cards(
         "analisis_base",
         "cuerpo",
         "crew",
+        "kpis",
+        "por_deporte",
+        "metrics",
     }
     for clave, payload in list(datos.items()):
         if clave in skip:

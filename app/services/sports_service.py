@@ -103,6 +103,11 @@ class SportsService:
         )
         return data if isinstance(data, list) else []
 
+    async def get_asociaciones(self, authorization: Optional[str] = None) -> list[dict]:
+        """Todas las asociaciones deporte–discapacidad: ``GET /api/sport-disabilities``."""
+        data = await self._get_json("/api/sport-disabilities", authorization, default=[])
+        return data if isinstance(data, list) else []
+
     async def get_rutinas_publicadas(self, authorization: Optional[str] = None) -> list[dict]:
         """Rutinas publicadas en la plataforma: ``GET /api/routines``. Lista o ``[]``."""
         data = await self._get_json("/api/routines", authorization, default=[])

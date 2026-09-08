@@ -56,6 +56,15 @@ def test_detectar_frases_simples():
     assert detectar_comando_entrenamiento("Competir contra mi historial") == "competencia_historial"
     assert detectar_comando_entrenamiento("Avisa al entrenador") == "alerta_entrenador"
     assert detectar_comando_entrenamiento("Notifica progreso destacado") == "progreso_entrenador"
+    assert detectar_comando_entrenamiento("Mi progreso") == "dashboard"
+    assert detectar_comando_entrenamiento("Publica una rutina de fuerza") is None
+    assert detectar_comando_entrenamiento("Crea un deporte de running") is None
+    from app.nlp.entrenamiento_pedido import extraer_nombre_alta_deporte
+    from app.nlp.intenciones import clasificar
+
+    assert extraer_nombre_alta_deporte("Crea un deporte de running") == "Running"
+    assert clasificar("Crea un deporte de running")["nombre"] == "crear_deporte"
+    assert clasificar("Publica una rutina de fuerza")["nombre"] == "crear_rutina"
 
 
 def test_hu40():
@@ -114,6 +123,8 @@ def test_hu45():
     a = _run(_cmd("dashboard", "Muéstrame mi dashboard"))
     assert a["datos"]["caso_prueba"] == "CP21-HU45"
     assert a["datos"]["graficos"] is True
+    assert (a["datos"].get("vista") or {}).get("kpis")
+    assert "Eventos inscritos" in a["respuesta"] or "eventos inscritos" in a["respuesta"].lower()
     b = _run(_cmd("dashboard_predicciones", "Dashboard de métricas y predicciones"))
     assert b["datos"]["caso_prueba"] == "CP22-HU45"
     assert b["datos"]["prediccion_riesgo"]["nivel"]
@@ -154,6 +165,8 @@ def test_hu49():
     setup()
     a = _run(_cmd("modo_competencia", "Activa modo competencia"))
     assert a["datos"]["caso_prueba"] == "CP29-HU49"
+    assert a["datos"].get("plan")
+    assert "plan" in a["respuesta"].lower() or "semana" in a["respuesta"].lower()
     b = _run(_cmd("competencia_historial", "Competir contra mi historial"))
     assert b["datos"]["caso_prueba"] == "CP30-HU49"
 

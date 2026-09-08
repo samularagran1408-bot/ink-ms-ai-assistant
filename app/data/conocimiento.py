@@ -48,10 +48,9 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
     },
     "ayuda": {
         "respuestas": [
-            "Puedo ayudarte con: rutinas de entrenamiento adaptadas a tu discapacidad, "
-            "recomendación de eventos según tu perfil, información del catálogo de "
-            "deportes y sus adaptaciones, y los quices de aptitud para entrenadores y "
-            "organizadores.",
+            "Puedo ayudarte con: rutinas adaptadas, eventos, deportes y adaptaciones, "
+            "quices de aptitud, tu progreso y, si eres staff, números de la plataforma "
+            "(usuarios, asociaciones por deporte, dashboard).",
             "Estas son mis funciones: crear rutinas personalizadas, sugerirte eventos "
             "compatibles con tu perfil, explicarte adaptaciones deporte-discapacidad y "
             "guiarte en la verificación como entrenador u organizador.",
@@ -271,17 +270,6 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
             "POST /api/ai/quiz/trainer/generar para el quiz de entrenador",
         ],
         "accion": "quiz",
-    },
-    "progreso": {
-        "respuestas": [
-            "Tu progreso se construye con las sesiones registradas, la asistencia a "
-            "eventos y la evolución de tus rutinas. El servicio de reportes consolida "
-            "esa información.",
-            "Puedo analizar tu historial de participación en eventos e inscripciones para "
-            "darte una lectura de tu evolución.",
-        ],
-        "sugerencias": ["Prueba el análisis de competencia con tu usuario"],
-        "accion": "eventos",
     },
     "nutricion": {
         "respuestas": [
@@ -596,17 +584,14 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
 # Respuestas cuando no se identifica la intención: en lugar de un texto fijo, se
 # reconoce lo preguntado y se ofrece un camino concreto.
 NO_ENTENDIDO = [
-    "No estoy seguro de haber entendido lo que me pides. Puedo ayudarte con rutinas "
-    "adaptadas, eventos disponibles, adaptaciones deporte-discapacidad y los quices de "
-    "entrenador u organizador. ¿Cuál de esos temas se acerca a tu duda?",
-    "Eso se me escapa un poco. Donde sí puedo ayudarte es en entrenamiento adaptado, "
-    "eventos de la plataforma, adaptaciones por discapacidad y verificación de "
-    "entrenadores y organizadores. ¿Reformulamos por ahí?",
-    "No logro interpretar tu consulta. Dime si va por rutinas, eventos, adaptaciones o "
-    "quices de aptitud y lo resolvemos.",
+    "Dime un poco más y lo vemos juntos. También puedo armarte una rutina, "
+    "mostrarte eventos o explicarte adaptaciones cuando quieras.",
+    "Cuéntame qué necesitas con tus palabras. Si quieres, empezamos por una "
+    "rutina, por los eventos o por las adaptaciones de un deporte.",
+    "Estoy aquí para ayudarte: una duda, una rutina o un evento. ¿Por dónde seguimos?",
 ]
 
 NO_ENTENDIDO_ADAPTADO = {
-    "cognitiva": "No entendí bien. Elige una opción: 1) rutina de ejercicio, 2) eventos, "
-                 "3) adaptaciones, 4) quiz. Escribe el número o la palabra.",
+    "cognitiva": "Puedo ayudarte ahora. Elige: 1) rutina, 2) eventos, "
+                 "3) adaptaciones, 4) otra pregunta. Escribe el número o la pregunta.",
 }

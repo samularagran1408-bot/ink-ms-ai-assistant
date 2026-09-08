@@ -57,8 +57,9 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "rendimiento y predicciones",
     )),
     ("dashboard", (
-        "visualizar dashboard", "muestra el dashboard", "mi dashboard",
-        "graficos interactivos", "mis metricas",
+        "visualizar dashboard", "muestra el dashboard", "muestrame el dashboard",
+        "muestrame mi dashboard", "mi dashboard", "mi progreso",
+        "graficos interactivos", "mis metricas", "ver mi dashboard",
     )),
     ("iniciar_entrenamiento", (
         "iniciar entrenamiento", "iniciar el entrenamiento",
@@ -93,15 +94,54 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+# Altas en la plataforma (entrenador): no deben caer en rutina local.
+_ESCRITURAS_PLATAFORMA = (
+    "crea un deporte",
+    "crear un deporte",
+    "crear deporte",
+    "crea deporte",
+    "publica una rutina",
+    "publicar una rutina",
+    "publicar rutina",
+    "publica rutina",
+    "guardar la rutina",
+    "subir la rutina",
+    "crear rutina en la plataforma",
+)
+
+
 def detectar_comando_entrenamiento(mensaje: str) -> Optional[str]:
     """Comando HU40–HU50, o None si el mensaje no es de estos casos."""
     texto = normalizar(mensaje)
     if not texto:
         return None
+    if any(f in texto for f in _ESCRITURAS_PLATAFORMA):
+        return None
     for nombre, frases in _COMANDOS:
         if any(f in texto for f in frases):
             return nombre
     return None
+
+
+_ALTA_DEPORTE = re.compile(
+    r"(?:crea|crear|anade|agrega|alta de|nuevo)\s+(?:un\s+)?deporte\s+"
+    r"(?:de\s+|llamado\s+|que se llame\s+)?(.+)",
+)
+
+
+def extraer_nombre_alta_deporte(mensaje: str) -> str:
+    """Nombre del deporte a dar de alta, p. ej. running en «Crea un deporte de running»."""
+    texto = normalizar(mensaje)
+    if not texto:
+        return ""
+    m = _ALTA_DEPORTE.search(texto)
+    if not m:
+        return ""
+    nombre = m.group(1).strip(" .,:;")
+    nombre = re.sub(r"^(de|del|la|el|un|una)\s+", "", nombre)
+    if not nombre or nombre in {"deporte", "nuevo"}:
+        return ""
+    return " ".join(p.capitalize() for p in nombre.split())
 
 
 def extraer_rpe(mensaje: str) -> Optional[float]:

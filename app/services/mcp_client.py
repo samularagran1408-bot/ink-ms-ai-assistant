@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Optional
 
 from app.config import settings
 
 _MCP_TIMEOUT = 30.0
+_TOOLS_CACHE_TTL = 90.0
+_tools_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
 def _openai_tool(tool: Any) -> dict[str, Any]:
@@ -115,9 +118,18 @@ async def _con_sesion(authorization: Optional[str], operacion):
 
 
 async def listar_tools_openai(authorization: Optional[str] = None) -> list[dict[str, Any]]:
-    """Lista tools MCP en formato OpenAI. Vacío si el servidor no responde."""
+    """Lista tools MCP en formato OpenAI. Vacío si el servidor no responde.
+
+    Cachea 90 s por token: el handshake Streamable HTTP de cada list_tools
+    era más caro que la consulta en sí.
+    """
     if not settings.MCP_ENABLED or not settings.MCP_URL:
         return []
+    clave = authorization or ""
+    ahora = time.monotonic()
+    hit = _tools_cache.get(clave)
+    if hit and ahora - hit[0] < _TOOLS_CACHE_TTL:
+        return hit[1]
     try:
         from mcp.client.session import ClientSession  # noqa: F401
         from mcp.client.streamable_http import streamable_http_client  # noqa: F401
@@ -131,10 +143,12 @@ async def listar_tools_openai(authorization: Optional[str] = None) -> list[dict[
         return [_openai_tool(t) for t in (respuesta.tools or [])]
 
     try:
-        return await _con_sesion(authorization, _listar)
+        tools = await _con_sesion(authorization, _listar)
     except Exception as exc:
         print(f"MCP no alcanzable ({settings.MCP_URL}): {exc}")
         return []
+    _tools_cache[clave] = (ahora, tools)
+    return tools
 
 
 async def llamar_tool(

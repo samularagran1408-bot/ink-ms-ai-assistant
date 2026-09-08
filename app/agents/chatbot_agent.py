@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.agents.dashboard_agent import DashboardAgent
 from app.agents.entrenamiento_agent import EntrenamientoAgent
+from app.agents.metricas_agent import MetricasAgent
 
 from app.config import settings
 from app.data.conocimiento import NO_ENTENDIDO, NO_ENTENDIDO_ADAPTADO
@@ -39,7 +40,12 @@ from app.nlp.admin_pedido import (
     pide_pdf_auditoria,
 )
 from app.nlp.inscripcion_pedido import coincidencias_inscripcion, extraer_nombre_evento
-from app.nlp.entrenamiento_pedido import detectar_comando_entrenamiento
+from app.nlp.entrenamiento_pedido import (
+    detectar_comando_entrenamiento,
+    extraer_nombre_alta_deporte,
+)
+from app.nlp.texto import VACIAS, normalizar
+from app.nlp.metricas_pedido import detectar_pedido_metricas
 from app.services.conversacion_service import ConversacionService
 from app.services.llm_service import LLMService, _limpiar, system_prompt
 from app.services.mcp_client import llamar_tool, listar_tools_openai
@@ -61,12 +67,20 @@ from app.tools.writes import (
 
 _ROTACION: dict[tuple[str, str], int] = {}
 UMBRAL_CANDIDATO = 0.18
+# Debajo de esto una intención con tool es demasiado floja: mejor el LLM abierto.
+UMBRAL_HERRAMIENTA_LOCAL = 0.55
 # Cortesía: respuesta local corta basta
 _SOCIAL = frozenset({"saludo", "despedida", "agradecimiento"})
 # Intenciones que disparan herramientas con datos reales
 _CON_HERRAMIENTA = frozenset({
     "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
     "discapacidades", "adaptaciones", "quiz", "progreso", "cuenta",
+    "crear_evento", "crear_deporte", "crear_rutina",
+    "bloquear_usuario", "cancelar_inscripcion",
+    "exportar_pdf", "listar_usuarios", "lesiones",
+})
+# Altas / bajas: no las manda el chat abierto aunque la confianza sea justa.
+_ESCRITURAS_LOCALES = frozenset({
     "crear_evento", "crear_deporte", "crear_rutina",
     "bloquear_usuario", "cancelar_inscripcion",
     "exportar_pdf", "listar_usuarios", "lesiones",
@@ -124,6 +138,17 @@ _TOOLS_UI = {
     "eliminar_deporte": "Eliminando el deporte",
     "dibujar_cuerpo": "Dibujando el mapa corporal",
     "cuerpo": "Marcando el dolor en el cuerpo",
+    "asociaciones_por_deporte": "Contando asociaciones por deporte",
+    "cuantos_usuarios": "Contando usuarios",
+    "cuantos_eventos": "Contando eventos",
+    "cuantos_deportes": "Contando deportes",
+    "cuantas_discapacidades": "Contando discapacidades",
+    "cuantas_rutinas": "Contando rutinas",
+    "cuantos_atletas": "Revisando atletas inscritos",
+    "dashboard_plataforma": "Leyendo el dashboard de la plataforma",
+    "panel_organizador": "Leyendo el panel de organizador",
+    "panel_entrenador": "Leyendo el panel de entrenador",
+    "metricas_plataforma": "Consultando métricas",
 }
 
 
@@ -221,6 +246,7 @@ class ChatbotAgent:
         self.conversaciones = ConversacionService()
         self.dashboard = DashboardAgent()
         self.entrenamiento = EntrenamientoAgent()
+        self.metricas = MetricasAgent()
 
     # ------------------------------------------------------------------ público
 
@@ -268,8 +294,27 @@ class ChatbotAgent:
                 )
             return resultado
 
-        # Escrituras reales: propuesta local + Confirmo → MCP (el LLM no llama la tool).
-        if intencion in ("bloquear_usuario", "cancelar_inscripcion"):
+        pedido_metricas = detectar_pedido_metricas(mensaje)
+        if pedido_metricas:
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": pedido_metricas, "estado": "ejecutando"}
+                )
+            resultado = await self.metricas.procesar(
+                pedido_metricas,
+                usuario_id,
+                mensaje,
+                authorization,
+                roles=roles or [],
+            )
+            if eventos is not None:
+                eventos.append(
+                    {"evento": "herramienta", "detalle": pedido_metricas, "estado": "listo"}
+                )
+            return resultado
+
+        # Datos de plataforma: Sports/Users directo. Sin Crew ni el LLM eligiendo tools.
+        if intencion in _CON_HERRAMIENTA and self._intencion_local_firme(clasificacion):
             if eventos is not None:
                 eventos.append(
                     {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
@@ -286,7 +331,7 @@ class ChatbotAgent:
                 mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
             )
 
-        # 1b) Dominio CrewAI (consulta, quiz, plan, investigación). Altas reales no.
+        # CrewAI opcional (CHAT_ORQUESTA_CREW=true). Lento con modelos :free.
         if settings.CHAT_ORQUESTA_CREW:
             from app.crew.puente_chat import ejecutar_crew_en_chat
 
@@ -301,7 +346,7 @@ class ChatbotAgent:
             if via_crew:
                 return via_crew
 
-        # 2) Tool-calling LLM (estilo MCP) cuando está habilitado
+        # Tool-calling LLM solo si no hubo intención local clara.
         if settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible:
             con_tools = await self._responder_con_tools(
                 mensaje,
@@ -329,38 +374,24 @@ class ChatbotAgent:
                 )
                 return con_tools
 
-        # 3) Herramienta clara → datos reales + pulido LLM si hay
-        if intencion in _CON_HERRAMIENTA:
-            if eventos is not None:
-                eventos.append(
-                    {"evento": "herramienta", "detalle": intencion, "estado": "ejecutando"}
-                )
-            resultado = await self._responder_conocido(
-                usuario_id, intencion, clave_discapacidad, authorization, mensaje,
-                roles=roles or [], perfil=perfil,
-            )
-            if eventos is not None:
-                eventos.append(
-                    {"evento": "herramienta", "detalle": intencion, "estado": "listo"}
-                )
-            return await self._sintetizar_como_agente(
-                mensaje, resultado, clave_discapacidad, historial_llm, clasificacion
-            )
-
         # 4) Resto (FAQ, dudas, desconocido): chatbot LLM con contexto
         borrador = None
-        if intencion:
+        sugerencias = [
+            "¿Quieres que te prepare una rutina adaptada?",
+            "Puedo mostrarte los eventos compatibles con tu perfil",
+        ]
+        if intencion and self._intencion_local_firme(clasificacion):
             local = await self._responder_conocido(
                 usuario_id, intencion, clave_discapacidad, authorization, mensaje,
                 roles=roles or [], perfil=perfil,
             )
             borrador = local.get("respuesta")
-            sugerencias = local.get("sugerencias") or []
-        else:
-            sugerencias = [
-                "¿Quieres que te prepare una rutina adaptada?",
-                "Puedo mostrarte los eventos compatibles con tu perfil",
-            ]
+            sugerencias = local.get("sugerencias") or sugerencias
+        elif intencion:
+            conocimiento = await obtener_conocimiento(intencion) or {}
+            variantes = conocimiento.get("respuestas") or []
+            borrador = variantes[0] if variantes else None
+            sugerencias = conocimiento.get("sugerencias") or sugerencias
 
         conversacional = await self._responder_conversacional(
             mensaje,
@@ -376,8 +407,8 @@ class ChatbotAgent:
             conversacional["sugerencias"] = conversacional.get("sugerencias") or sugerencias
             return conversacional
 
-        # 5) Sin LLM: plantilla / aproximación / no_entendido
-        if intencion:
+        # 5) Sin LLM: plantilla útil, nunca un «no entendí».
+        if intencion and self._intencion_local_firme(clasificacion):
             return await self._responder_conocido(
                 usuario_id, intencion, clave_discapacidad, authorization, mensaje,
                 roles=roles or [], perfil=perfil,
@@ -389,6 +420,8 @@ class ChatbotAgent:
             clasificacion,
             authorization,
             historial_llm,
+            perfil=perfil,
+            roles=roles or [],
         )
 
     async def procesar_mensaje(
@@ -522,24 +555,25 @@ class ChatbotAgent:
         else:
             clasificacion = clasificar(mensaje)
             intencion = clasificacion["nombre"]
+            pedido_metricas = detectar_pedido_metricas(mensaje)
 
-            if settings.CHAT_ORQUESTA_CREW:
+            if pedido_metricas:
+                yield _evento_ui("herramienta", pedido_metricas, "ejecutando")
+            elif intencion in _CON_HERRAMIENTA:
+                yield _evento_ui("herramienta", intencion, "ejecutando")
+            elif settings.CHAT_ORQUESTA_CREW:
                 from app.crew.puente_chat import enrutado_chat_crew
 
                 if enrutado_chat_crew(mensaje, roles):
                     yield _evento_ui("estado", "crew")
                 elif settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
                     yield _evento_ui("estado", "agente_con_tools")
-                elif intencion in _CON_HERRAMIENTA:
-                    yield _evento_ui("herramienta", intencion, "ejecutando")
                 elif self.llm.disponible and intencion not in _SOCIAL:
                     yield _evento_ui("estado", "redactando_respuesta")
                 else:
                     yield _evento_ui("estado", "consultando_conocimiento")
             elif settings.LLM_TOOL_CALLING_ENABLED and self.llm.disponible and intencion not in _SOCIAL:
                 yield _evento_ui("estado", "agente_con_tools")
-            elif intencion in _CON_HERRAMIENTA:
-                yield _evento_ui("herramienta", intencion, "ejecutando")
             elif self.llm.disponible and intencion not in _SOCIAL:
                 yield _evento_ui("estado", "redactando_respuesta")
             else:
@@ -897,6 +931,8 @@ class ChatbotAgent:
             args["created_by"] = usuario_id
         if nombre == "crear_rutina" and not args.get("trainer_id"):
             args["trainer_id"] = usuario_id
+        if nombre in ("crear_deporte", "editar_deporte"):
+            args["difficulty"] = self._dificultad_deporte(args.get("difficulty"))
         if nombre == "estadisticas_usuario" and not es_admin:
             args.pop("nombre_o_id", None)
         if nombre == "listar_usuarios":
@@ -907,6 +943,47 @@ class ChatbotAgent:
                 args["solo_activos"] = True
                 args["solo_inactivos"] = False
         return args
+
+    @staticmethod
+    def _dificultad_deporte(valor: Any) -> str:
+        """Sports solo acepta bajo | medio | alto."""
+        n = str(valor or "").strip().lower()
+        if n in {"bajo", "baja", "principiante", "beginner", "easy", "low"}:
+            return "bajo"
+        if n in {"alto", "alta", "avanzado", "advanced", "hard", "high"}:
+            return "alto"
+        return "medio"
+
+    @staticmethod
+    def _intencion_local_firme(clasificacion: dict[str, Any]) -> bool:
+        """True si conviene el motor local (frase clara o escritura), no el chat abierto."""
+        nombre = clasificacion.get("nombre")
+        if not nombre:
+            return False
+        if nombre in _ESCRITURAS_LOCALES:
+            return True
+        return float(clasificacion.get("confianza") or 0) >= UMBRAL_HERRAMIENTA_LOCAL
+
+    @staticmethod
+    def _respuesta_abierta_sin_llm(mensaje: str, discapacidad: str) -> str:
+        """Solo si OpenRouter no contestó: no recicla palabras del usuario."""
+        if discapacidad in ("cognitiva", "intelectual"):
+            return (
+                "Puedo ayudarte ahora. Elige: 1) rutina, 2) eventos, "
+                "3) adaptaciones, 4) otra pregunta. Escribe el número o la pregunta."
+            )
+        error = (LLMService._ultimo_error or "").lower()
+        if "free-models-per-day" in error or "insufficient" in error or "402" in error:
+            return (
+                "Hoy no pude usar el modelo de chat (cupo gratuito agotado o sin créditos). "
+                "Las rutinas, eventos y adaptaciones de InkluSport siguen disponibles. "
+                "Cuando el proveedor tenga cupo, te contesto también las preguntas generales."
+            )
+        return (
+            "Ahora mismo no pude completar esa respuesta con el modelo. "
+            "Prueba de nuevo en unos segundos. Si quieres, mientras tanto te armo "
+            "una rutina, te listo eventos o te explico adaptaciones."
+        )
 
     async def _definiciones_tools(
         self, roles: list[str], authorization: Optional[str]
@@ -1119,7 +1196,8 @@ class ChatbotAgent:
             texto = self._rotar(usuario_id, intencion, variantes) if variantes else ""
 
         datos: dict[str, Any] = {}
-        accion = conocimiento.get("accion") or {
+        # El mapa local gana a Mongo: un seed viejo dejó progreso→eventos.
+        accion = {
             "progreso": "estadisticas",
             "cuenta": "perfil",
             "crear_evento": "propuesta_evento",
@@ -1128,7 +1206,7 @@ class ChatbotAgent:
             "bloquear_usuario": "propuesta_bloqueo",
             "cancelar_inscripcion": "propuesta_cancelar_inscripcion",
             "lesiones": "cuerpo",
-        }.get(intencion)
+        }.get(intencion) or conocimiento.get("accion")
         if accion:
             complemento, datos = await self._enriquecer(
                 accion, usuario_id, discapacidad, authorization, mensaje,
@@ -1166,7 +1244,7 @@ class ChatbotAgent:
         roles: Optional[list[str]] = None,
     ) -> Optional[dict[str, Any]]:
         """Chat normal con LLM: responde casi cualquier pregunta con contexto real."""
-        if not self.llm.disponible:
+        if not self.llm.is_configured:
             return None
 
         contexto = await self._contexto_plataforma(authorization, perfil=perfil)
@@ -1184,10 +1262,13 @@ class ChatbotAgent:
                 "role": "system",
                 "content": system_prompt(
                     discapacidad,
-                    "Actúa como un chatbot conversacional útil: responde la pregunta "
-                    "del usuario aunque no sea solo de deporte. Sé natural, breve y "
-                    "varía el estilo. Si puedes enlazar con entrenamiento inclusivo o "
-                    "eventos de InkluSport, hazlo al final sin forzar.",
+                    "Eres un asistente de IA conversacional. Responde SIEMPRE la pregunta "
+                    "del usuario con naturalidad, aunque sea cotidiana, cultural, de salud "
+                    "general o no tenga herramienta. Si preguntan un dato general (capitales, "
+                    "ciencia, vida diaria), contéstalo directo y bien. InkluSport es el "
+                    "contexto, no un muro: no digas que no entendiste ni redirijas al menú "
+                    "de rutinas/eventos/quiz salvo al final y solo si encaja. "
+                    "Sé empático y varía el estilo; no suenes a plantilla.",
                 ),
             },
             *historial,
@@ -1197,15 +1278,17 @@ class ChatbotAgent:
                     f"Mensaje del usuario: «{mensaje}»{hint}\n\n"
                     f"Datos reales de InkluSport ahora mismo:\n{sesion}\n{contexto}"
                     f"{pista}\n\n"
-                    "Responde en español, máximo 6 frases, sin Markdown y sin JSON. "
+                    "Responde en español, máximo 8 frases, sin Markdown y sin JSON. "
                     "No pidas email ni ID. No inventes eventos, deportes ni cupos: "
                     "solo los del contexto. "
-                    "Si falta un dato, dilo y ofrece el siguiente paso "
-                    "(rutina, eventos, adaptaciones o quiz)."
+                    "Contesta primero lo que te preguntaron. Si falta un dato de la "
+                    "plataforma, dilo con naturalidad y sigue siendo útil."
                 ),
             },
         ]
-        texto = await self.llm.texto_mensajes(mensajes, temperatura=0.75)
+        texto = await self.llm.texto_mensajes(
+            mensajes, temperatura=0.75, ignorar_pausa=True
+        )
         if not texto:
             return None
         return {
@@ -1227,40 +1310,33 @@ class ChatbotAgent:
         clasificacion: dict[str, Any],
         authorization: Optional[str],
         historial: list[dict[str, str]],
+        *,
+        perfil: Optional[dict[str, Any]] = None,
+        roles: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Fallback cuando no hay intención clara: LLM, aproximación o plantilla de no entendido."""
+        """Pregunta abierta: LLM si hay, si no una respuesta útil (nunca «no entendí»)."""
         conversacional = await self._responder_conversacional(
             mensaje,
             discapacidad,
             authorization,
             historial,
             intencion_hint=clasificacion.get("mejor_candidato"),
+            perfil=perfil,
+            roles=roles or [],
         )
         if conversacional:
             return conversacional
 
-        candidato = clasificacion.get("mejor_candidato")
-        if candidato and clasificacion["confianza"] >= UMBRAL_CANDIDATO:
-            resultado = await self._responder_conocido(
-                usuario_id, candidato, discapacidad, authorization, mensaje
-            )
-            resultado["respuesta"] = (
-                f"Entiendo que tu pregunta va por aquí; si no es esto, dímelo con otras "
-                f"palabras.\n\n{resultado['respuesta']}"
-            )
-            resultado["aproximada"] = True
-            return resultado
-
-        adaptada = NO_ENTENDIDO_ADAPTADO.get(discapacidad)
+        sugerencias = [
+            "Pídeme una rutina indicando tu objetivo",
+            "Pregúntame qué eventos hay disponibles",
+            "Consúltame las adaptaciones de un deporte",
+        ]
         return {
-            "respuesta": adaptada or self._rotar("global", "no_entendido", NO_ENTENDIDO),
-            "intencion": "no_entendido",
-            "adaptada": bool(adaptada),
-            "sugerencias": [
-                "Pídeme una rutina indicando tu objetivo",
-                "Pregúntame qué eventos hay disponibles",
-                "Consúltame las adaptaciones de un deporte",
-            ],
+            "respuesta": self._respuesta_abierta_sin_llm(mensaje, discapacidad),
+            "intencion": clasificacion.get("mejor_candidato") or "general",
+            "adaptada": discapacidad in ("cognitiva", "intelectual"),
+            "sugerencias": sugerencias,
             "datos": None,
             "fuente": "motor_local",
             "herramientas_usadas": [],
@@ -1292,12 +1368,11 @@ class ChatbotAgent:
             resultado["sintesis_llm"] = False
             return resultado
 
-        # Por defecto pulimos herramientas; las FAQ ya van por _responder_conversacional
-        if intencion not in _CON_HERRAMIENTA and not settings.LLM_SINTESIS_INTENIONES_CONOCIDAS:
-            if not resultado.get("aproximada"):
-                resultado = dict(resultado)
-                resultado["sintesis_llm"] = False
-                return resultado
+        # El motor local ya trae los hechos; pulir con LLM :free solo retrasa.
+        if not settings.LLM_SINTESIS_INTENIONES_CONOCIDAS and not resultado.get("aproximada"):
+            resultado = dict(resultado)
+            resultado["sintesis_llm"] = False
+            return resultado
 
         borrador = resultado.get("respuesta") or ""
         datos = resultado.get("datos")
@@ -1479,6 +1554,7 @@ class ChatbotAgent:
                 "ejercicios",
                 "perfil",
                 "estadisticas",
+                "adaptaciones",
                 "propuesta_evento",
                 "propuesta_deporte",
                 "propuesta_rutina",
@@ -1605,20 +1681,100 @@ class ChatbotAgent:
             ]
         }
 
+    def _deportes_mencionados(self, mensaje: str, deportes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Deportes del catálogo cuyo nombre aparece en el mensaje (p. ej. natación)."""
+        texto_n = normalizar(mensaje)
+        if not texto_n or not deportes:
+            return []
+        tokens = [t for t in texto_n.split() if t not in VACIAS and len(t) >= 4]
+        pedidos: list[dict[str, Any]] = []
+        for deporte in deportes:
+            nombre = normalizar(str(deporte.get("name") or ""))
+            if not nombre:
+                continue
+            if nombre in texto_n or any(t in nombre for t in tokens):
+                pedidos.append(deporte)
+        return pedidos
+
+    def _adaptaciones_locales(
+        self, mensaje: str, discapacidad: str
+    ) -> Optional[tuple[str, dict[str, Any]]]:
+        """Notas locales si el catálogo sports no trae adaptaciones del deporte pedido."""
+        texto_n = normalizar(mensaje)
+        if "natacion" not in texto_n:
+            return None
+        etiqueta = descripcion(canonizar(discapacidad)) if discapacidad != "general" else None
+        items = [
+            {
+                "deporte": "Natación adaptada",
+                "discapacidad": "Visual",
+                "adaptacion": (
+                    "Toque (tapper) en virajes, aviso en la llegada, calle con referencias táctiles "
+                    "y salida con asistencia si hace falta."
+                ),
+            },
+            {
+                "deporte": "Natación adaptada",
+                "discapacidad": "Motriz / silla",
+                "adaptacion": (
+                    "Acceso por rampa o elevador, salida sentada o con ayuda, flotadores "
+                    "y calles más anchas; el reglamento usa clasificación funcional."
+                ),
+            },
+            {
+                "deporte": "Natación adaptada",
+                "discapacidad": "Auditiva",
+                "adaptacion": (
+                    "Señales visuales de salida (luz o gesto), instrucciones por escrito "
+                    "o lengua de señas en el borde."
+                ),
+            },
+            {
+                "deporte": "Natación adaptada",
+                "discapacidad": "Intelectual / cognitiva",
+                "adaptacion": (
+                    "Consignas cortas, demostración en el borde, un apoyo en el agua "
+                    "si lo necesita y repetición de la misma rutina de calle."
+                ),
+            },
+        ]
+        extra = (
+            f" Para tu perfil ({etiqueta}) prioriza consignas claras y apoyo en el borde."
+            if etiqueta else ""
+        )
+        lineas = ["Adaptaciones típicas de la natación inclusiva:"]
+        for item in items:
+            lineas.append(
+                f"- {item['deporte']} · {item['discapacidad']}: {item['adaptacion']}"
+            )
+        lineas.append(
+            "Si el club ya las tiene cargadas en InkluSport, un entrenador puede "
+            "registrarlas en el catálogo." + extra
+        )
+        return "\n".join(lineas), {"adaptaciones": items}
+
     async def _datos_adaptaciones(
-        self, usuario_id: str, discapacidad: str, authorization: Optional[str]
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **_kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
-        """Recoge adaptaciones deporte–discapacidad relevantes para el perfil."""
+        """Adaptaciones de un deporte (si lo nombran) o las del perfil."""
         deportes = await self.sports_service.get_deportes_activos(authorization)
-        encontradas = []
-        for deporte in deportes[:6]:
+        mencionados = self._deportes_mencionados(mensaje, deportes)
+        objetivo = mencionados or deportes[:8]
+        filtro_perfil = not mencionados and discapacidad != "general"
+        encontradas: list[dict[str, Any]] = []
+        for deporte in objetivo:
             sport_id = deporte.get("id")
             if sport_id is None:
                 continue
             for adaptacion in await self.sports_service.get_adaptaciones_deporte(
                 sport_id, authorization
             ):
-                if discapacidad != "general" and not coincide(
+                if filtro_perfil and not coincide(
                     discapacidad, adaptacion.get("disabilityName")
                 ):
                     continue
@@ -1629,16 +1785,33 @@ class ChatbotAgent:
                 })
 
         if not encontradas:
+            locales = self._adaptaciones_locales(mensaje, discapacidad)
+            if locales:
+                return locales
+            if mencionados:
+                nombres = ", ".join(
+                    str(d.get("name")) for d in mencionados if d.get("name")
+                )
+                return (
+                    f"Encontré {nombres} en el catálogo, pero aún no hay adaptaciones "
+                    "registradas para esa modalidad. Un entrenador verificado puede cargarlas.",
+                    {"adaptaciones": [], "deportes": mencionados},
+                )
             return (
                 f"Aún no hay adaptaciones registradas para {descripcion(discapacidad)} en "
                 "los deportes activos. Un entrenador verificado puede registrarlas.",
                 {"adaptaciones": []},
             )
 
-        lineas = ["Adaptaciones registradas:"]
-        for item in encontradas[:5]:
-            lineas.append(f"- {item['deporte']} · {item['discapacidad']}: {item['adaptacion']}")
-        return "\n".join(lineas), {"adaptaciones": encontradas[:5]}
+        titulo = "Adaptaciones de " + ", ".join(
+            str(d.get("name")) for d in mencionados if d.get("name")
+        ) if mencionados else "Adaptaciones registradas"
+        lineas = [f"{titulo}:"]
+        for item in encontradas[:8]:
+            lineas.append(
+                f"- {item['deporte']} · {item['discapacidad']}: {item['adaptacion']}"
+            )
+        return "\n".join(lineas), {"adaptaciones": encontradas[:8]}
 
     async def _datos_rutina(
         self,
@@ -2073,14 +2246,15 @@ class ChatbotAgent:
         **kwargs: Any,
     ) -> tuple[str, dict[str, Any]]:
         """Propone dar de alta un deporte en el catálogo y pide confirmación para crearlo."""
-        idea = (mensaje or "Deporte inclusivo").strip() or "Deporte inclusivo"
+        extraido = extraer_nombre_alta_deporte(mensaje)
+        idea = extraido or (mensaje or "Deporte inclusivo").strip() or "Deporte inclusivo"
         if len(idea) < 3:
             idea = "Deporte inclusivo"
         nombre = idea[:80]
         args = {
             "name": nombre,
             "description": f"Alta sugerida por el asistente. Contexto: {mensaje or nombre}",
-            "difficulty": "intermedio",
+            "difficulty": "medio",
             "required_materials": "Material adaptado según el perfil del grupo",
             "is_active": True,
         }
@@ -2090,12 +2264,12 @@ class ChatbotAgent:
             "resumen": resumen_write("crear_deporte", args),
         }
         texto = (
-            f"Puedo dar de alta el deporte «{nombre}» (dificultad intermedia) "
+            f"Puedo dar de alta el deporte «{nombre}» (dificultad media) "
             "en el catálogo. Responde Confirmo para crearlo."
         )
         return texto, {
             "pendiente_write": pendiente,
-            "deportes": [{"nombre": nombre, "dificultad": "intermedio"}],
+            "deportes": [{"nombre": nombre, "dificultad": "medio"}],
         }
 
     async def _datos_propuesta_rutina(

@@ -193,7 +193,8 @@ _DEFINICIONES = [
         nombre="adaptaciones",
         descripcion="Adaptaciones de un deporte a una discapacidad",
         frases=(
-            "que adaptaciones", "como se adapta", "adaptaciones del deporte",
+            "que adaptaciones", "que adaptaciones tiene", "como se adapta",
+            "adaptaciones del deporte", "adaptaciones tiene la",
             "como adaptar el ejercicio", "material adaptado",
         ),
         palabras=("adaptacion", "adaptaciones", "adaptado", "adaptar", "ajuste", "ajustes"),
@@ -408,8 +409,10 @@ _DEFINICIONES = [
         nombre="crear_deporte",
         descripcion="Crear un deporte en el catálogo (entrenador)",
         frases=(
-            "crear un deporte", "alta de deporte", "nuevo deporte",
+            "crear un deporte", "crea un deporte", "crear deporte",
+            "crea deporte", "alta de deporte", "nuevo deporte",
             "añade un deporte", "agrega un deporte", "dar de alta un deporte",
+            "anade un deporte",
         ),
         prioridad=1.55,
     ),
@@ -417,7 +420,8 @@ _DEFINICIONES = [
         nombre="crear_rutina",
         descripcion="Guardar o publicar una rutina en la plataforma",
         frases=(
-            "publicar rutina", "guardar la rutina", "subir la rutina",
+            "publicar rutina", "publica una rutina", "publicar una rutina",
+            "publica rutina", "guardar la rutina", "subir la rutina",
             "crear rutina en la plataforma", "guardar rutina publicada",
         ),
         prioridad=1.55,
