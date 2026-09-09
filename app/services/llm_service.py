@@ -687,7 +687,9 @@ def system_prompt(disability_type: str = "general", sistema_extra: str = "") -> 
         f"Perfil de discapacidad del usuario: {disability_type}.\n"
         "Reglas:\n"
         "- Responde siempre en español, claro, empático y profesional.\n"
-        "- No uses Markdown ni asteriscos (lectores de pantalla).\n"
+        "- No uses asteriscos ni almohadillas (lectores de pantalla).\n"
+        "- Separa las ideas: un dato por línea, viñetas con '- ' y una línea "
+        "en blanco entre el titular y la lista. No amontones todo en un párrafo.\n"
         "- No pegues JSON ni bloques de código: resume con frases y viñetas.\n"
         "- Nunca pidas el email, correo o ID del usuario autenticado: ya está en sesión.\n"
         "- No inventes eventos, deportes ni datos: usa solo la información que te den "
@@ -712,4 +714,10 @@ def _limpiar(texto: str) -> str:
     limpio = re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", texto)
     limpio = re.sub(r"^#{1,6}\s*", "", limpio, flags=re.MULTILINE)
     limpio = re.sub(r"^\s*[-*]\s+", "- ", limpio, flags=re.MULTILINE)
-    return limpio.strip()
+    limpio = limpio.strip()
+    if "\n" in limpio:
+        return limpio
+    partes = re.split(r"(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÑ¿¡0-9])", limpio)
+    if len(partes) >= 3:
+        return "\n\n".join(p.strip() for p in partes if p.strip())
+    return limpio

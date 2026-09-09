@@ -12,6 +12,34 @@ from app.nlp.texto import normalizar
 
 _PEDIDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "estadisticas_eventos",
+        (
+            "evento con mas usuarios inscritos",
+            "evento con mas inscritos",
+            "evento con mas usuarios",
+            "evento con mas participantes",
+            "evento con mas gente",
+            "evento con mas cupos ocupados",
+            "cual evento tiene mas",
+            "que evento tiene mas",
+            "el evento con mas",
+            "evento mas popular",
+            "evento mas lleno",
+            "evento mas inscrito",
+            "evento con menos inscritos",
+            "evento con menos gente",
+            "ranking de inscritos",
+            "inscritos por evento",
+            "estadisticas de eventos",
+            "estadisticas de inscripciones",
+            "cuantos inscritos tiene",
+            "cuantos inscritos hay",
+            "cuantas inscripciones",
+            "aforo de eventos",
+            "cupos ocupados",
+        ),
+    ),
+    (
         "asociaciones_por_deporte",
         (
             "asociaciones por deporte",

@@ -148,6 +148,7 @@ _TOOLS_UI = {
     "dashboard_plataforma": "Leyendo el dashboard de la plataforma",
     "panel_organizador": "Leyendo el panel de organizador",
     "panel_entrenador": "Leyendo el panel de entrenador",
+    "estadisticas_eventos": "Comparando inscritos por evento",
     "metricas_plataforma": "Consultando métricas",
 }
 
@@ -230,8 +231,10 @@ _SISTEMA_TOOLS = (
     "Entrenador: si pide un deporte o rutina nueva, usa recomendar_deporte_nuevo "
     "o recomendar_rutina_nueva y ofrece crearlo en la plataforma. "
     "Las escrituras requieren que el usuario confirme; tú solo pide la tool. "
-    "Cuando ya tengas los datos, responde en español, máximo 6 frases, "
-    "sin Markdown y SIN pegar JSON."
+    "Cuando ya tengas los datos, responde en español, claro y aireado: "
+    "un dato o ítem por línea, viñetas con '- ' si hay lista, y una línea "
+    "en blanco entre el titular y el detalle. No amontones todo en un párrafo. "
+    "Sin asteriscos de Markdown y SIN pegar JSON."
 )
 
 
@@ -1278,9 +1281,14 @@ class ChatbotAgent:
                     f"Mensaje del usuario: «{mensaje}»{hint}\n\n"
                     f"Datos reales de InkluSport ahora mismo:\n{sesion}\n{contexto}"
                     f"{pista}\n\n"
-                    "Responde en español, máximo 8 frases, sin Markdown y sin JSON. "
+                    "Responde en español, claro y fácil de leer. "
+                    "Separa ideas: un evento o cifra por línea, viñetas con '- ' "
+                    "para rankings o listas, y una línea en blanco entre el titular "
+                    "y el detalle. No amontones varias ideas en un solo párrafo. "
+                    "Sin asteriscos de Markdown y sin JSON. "
                     "No pidas email ni ID. No inventes eventos, deportes ni cupos: "
-                    "solo los del contexto. "
+                    "solo los del contexto. Si preguntan estadísticas de inscritos "
+                    "o aforo, usa los números de cada evento. "
                     "Contesta primero lo que te preguntaron. Si falta un dato de la "
                     "plataforma, dilo con naturalidad y sigue siendo útil."
                 ),
@@ -1390,7 +1398,9 @@ class ChatbotAgent:
                     f"Borrador del motor local:\n{borrador}\n\n"
                     "Reescribe como chatbot natural de InkluSport: cercano, concreto y "
                     "sin sonar a plantilla repetida. Conserva todos los hechos del borrador "
-                    "y de los datos (nombres, fechas, cupos). Máximo 6 frases. "
+                    "y de los datos (nombres, fechas, cupos). "
+                    "Conserva saltos de línea y viñetas; si el borrador es una lista, "
+                    "déjala como lista (un ítem por línea). No comprimas todo en un párrafo. "
                     "No inventes nada nuevo."
                 ),
             },
@@ -1436,10 +1446,35 @@ class ChatbotAgent:
             lineas.append(f"- Discapacidades contempladas: {nombres}")
         if eventos:
             lineas.append(f"- Eventos publicados: {len(eventos)}")
-            for evento in eventos[:5]:
+            ranking = []
+            for evento in eventos[:8]:
+                maximo = evento.get("maxCapacity") or evento.get("max_capacity")
+                quedan = evento.get("availableCapacity") or evento.get("available_capacity")
+                try:
+                    max_n = int(maximo) if maximo is not None else None
+                    quedan_n = int(quedan) if quedan is not None else None
+                except (TypeError, ValueError):
+                    max_n, quedan_n = None, None
+                inscritos = (
+                    max(0, max_n - quedan_n)
+                    if max_n is not None and quedan_n is not None
+                    else None
+                )
+                ranking.append((inscritos if inscritos is not None else -1, evento, max_n, quedan_n, inscritos))
+                cupos = ""
+                if inscritos is not None and max_n is not None:
+                    cupos = f" · {inscritos}/{max_n} inscritos ({quedan_n} cupos libres)"
                 lineas.append(
                     f"  · {evento.get('name')} ({evento.get('sportName')}) "
-                    f"el {evento.get('eventDate')} en {evento.get('location')}"
+                    f"el {evento.get('eventDate')} en {evento.get('location')}{cupos}"
+                )
+            ocupados = [f for f in ranking if f[4] is not None]
+            if ocupados:
+                ocupados.sort(key=lambda x: (-x[0], str(x[1].get("name") or "")))
+                top = ocupados[0]
+                lineas.append(
+                    f"- Evento con más inscritos: {top[1].get('name')} "
+                    f"({top[4]}/{top[2]})"
                 )
         return "\n".join(lineas) or "- Catálogo vacío."
 

@@ -42,6 +42,28 @@ def _entero(bloque: Any, *claves: str) -> Optional[int]:
     return None
 
 
+def _entero_campo(item: dict[str, Any], *claves: str) -> Optional[int]:
+    """Lee un entero de claves camel/snake; None si falta o no es número."""
+    for clave in claves:
+        valor = item.get(clave)
+        if valor is None:
+            continue
+        try:
+            return int(valor)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _ocupacion(evento: dict[str, Any]) -> tuple[int, Optional[int], Optional[int]]:
+    """Inscritos confirmados = aforo máximo − cupos libres."""
+    maximo = _entero_campo(evento, "maxCapacity", "max_capacity")
+    libres = _entero_campo(evento, "availableCapacity", "available_capacity")
+    if maximo is None or libres is None:
+        return 0, maximo, libres
+    return max(0, maximo - libres), maximo, libres
+
+
 class MetricasAgent:
     """Conteos y paneles: Sports para catálogo, Reports para KPIs de staff."""
 
@@ -62,6 +84,7 @@ class MetricasAgent:
         """Resuelve el pedido o explica que el rol no cubre esa métrica."""
         rol = rol_principal(roles)
         handlers = {
+            "estadisticas_eventos": self._estadisticas_eventos,
             "asociaciones_por_deporte": self._asociaciones,
             "cuantos_usuarios": self._usuarios,
             "cuantos_eventos": self._eventos,
@@ -202,6 +225,94 @@ class MetricasAgent:
                 ],
             },
             ["consultar_dashboard"],
+        )
+
+    async def _estadisticas_eventos(
+        self,
+        usuario_id: str,
+        mensaje: str,
+        authorization: Optional[str],
+        rol: str,
+    ) -> dict[str, Any]:
+        """Ranking de inscritos por evento (aforo ocupado del catálogo vigente)."""
+        eventos = await self.sports.get_eventos_activos(authorization)
+        if not eventos:
+            eventos = await self.sports.get_eventos(authorization)
+        if not eventos:
+            return self._paquete(
+                "Ahora mismo no hay eventos publicados para comparar inscritos.",
+                "estadisticas_eventos",
+                {"eventos": []},
+                ["listar_eventos"],
+            )
+
+        filas: list[dict[str, Any]] = []
+        for evento in eventos:
+            if not isinstance(evento, dict):
+                continue
+            inscritos, maximo, libres = _ocupacion(evento)
+            filas.append(
+                {
+                    "id": evento.get("id"),
+                    "nombre": _nombre(evento, "name", "nombre") or "Evento",
+                    "deporte": _nombre(evento, "sportName", "sport_name") or "",
+                    "fecha": evento.get("eventDate") or evento.get("event_date"),
+                    "inscritos": inscritos,
+                    "maximo": maximo,
+                    "libres": libres,
+                }
+            )
+        if not filas:
+            return self._paquete(
+                "Hay eventos, pero no pude leer el aforo para contar inscritos.",
+                "estadisticas_eventos",
+                {"eventos": []},
+                ["listar_eventos"],
+            )
+
+        filas.sort(key=lambda f: (-int(f["inscritos"]), str(f["nombre"]).lower()))
+
+        texto_n = normalizar(mensaje)
+        pide_menos = any(
+            f in texto_n
+            for f in ("menos inscritos", "menos gente", "menos usuarios", "menos lleno")
+        )
+        destacado = filas[-1] if pide_menos and filas else filas[0]
+        etiqueta = "menos" if pide_menos else "más"
+
+        def _linea(item: dict[str, Any]) -> str:
+            cupo = f" de {item['maximo']}" if item.get("maximo") is not None else ""
+            deporte = f" ({item['deporte']})" if item.get("deporte") else ""
+            return f"{item['nombre']}{deporte}: {item['inscritos']} inscritos{cupo}"
+
+        lineas = [
+            f"El evento con {etiqueta} usuarios inscritos es:",
+            _linea(destacado),
+        ]
+        if len(filas) > 1:
+            lineas.append("")
+            lineas.append("Ranking vigente:")
+            muestra = list(reversed(filas[-5:])) if pide_menos else filas[:5]
+            for item in muestra:
+                lineas.append(f"- {_linea(item)}")
+        kpis = [
+            {
+                "titulo": item["nombre"],
+                "valor": f"{item['inscritos']}"
+                + (f"/{item['maximo']}" if item.get("maximo") is not None else ""),
+            }
+            for item in filas[:6]
+        ]
+        return self._paquete(
+            "\n".join(lineas),
+            "estadisticas_eventos",
+            {
+                "destacado": destacado,
+                "criterio": "menos" if pide_menos else "mas",
+                "ranking": filas[:12],
+                "kpis": kpis,
+            },
+            ["listar_eventos"],
         )
 
     async def _eventos(
