@@ -278,7 +278,7 @@ class ConversacionService:
             return []
         filtro: dict[str, Any] = dict(self._filtro_usuario(usuario_id, ids_alias))
         if not incluir_archivadas:
-            filtro["estado"] = "activa"
+            filtro["estado"] = {"$ne": "archivada"}
         try:
             docs = await (
                 db[COL_CONVERSACIONES]
@@ -375,13 +375,17 @@ class ConversacionService:
             print(f"Error borrando conversación: {exc}")
             return False
 
-    async def borrar_todas(self, usuario_id: str) -> int:
+    async def borrar_todas(
+        self, usuario_id: str, *, ids_alias: Optional[list[str]] = None
+    ) -> int:
         """Borra todas las conversaciones del usuario. Devuelve cuántos documentos se eliminaron."""
         db = get_db()
         if db is None:
             return 0
         try:
-            res = await db[COL_CONVERSACIONES].delete_many({"usuario_id": usuario_id})
+            res = await db[COL_CONVERSACIONES].delete_many(
+                self._filtro_usuario(usuario_id, ids_alias)
+            )
             return int(res.deleted_count or 0)
         except Exception as exc:
             print(f"Error borrando conversaciones: {exc}")

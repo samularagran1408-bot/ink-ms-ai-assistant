@@ -49,6 +49,7 @@ async def connect_to_mongo() -> str:
         db = candidato[settings.MONGODB_DB]
         _uri_activa = uri
         _ultimo_error = None
+        await asegurar_indices()
         return uri
 
     _ultimo_error = " | ".join(errores)
@@ -63,6 +64,23 @@ async def close_mongo_connection():
     client = None
     db = None
     _uri_activa = None
+
+
+async def asegurar_indices() -> None:
+    """Índices del historial de chat. Idempotente; no falla el arranque si Mongo rechaza uno."""
+    if db is None:
+        return
+    col = db["conversaciones_chatbot"]
+    indices = (
+        ([("usuario_id", 1), ("ultima_interaccion", -1)], "usuario_ultima_idx", False),
+        ([("usuario_id", 1), ("conversacion_id", 1)], "usuario_conversacion_uk", True),
+        ([("usuario_id", 1), ("estado", 1)], "usuario_estado_idx", False),
+    )
+    for campos, nombre, unico in indices:
+        try:
+            await col.create_index(campos, name=nombre, unique=unico)
+        except Exception as exc:
+            print(f"Mongo índice {nombre}: {exc}")
 
 
 def get_db():

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.agents.chatbot_agent import ChatbotAgent
 from app.deps.contexto import discapacidad_efectiva, resolver_contexto
 from app.models.chat import ChatResponse
+from app.services.chat_limite import liberar, reservar, turno_usuario
 from app.services.conversacion_service import ConversacionService
 from app.tools.cards import construir_cards
 from app.tools.mcp import descripcion_protocolo, mcp_del_turno
@@ -172,16 +173,17 @@ async def chat(
         discapacidad = discapacidad_efectiva(
             ctx, request.disability_type, permitir_override=True
         )
-        resultado = await agent.procesar_mensaje(
-            ctx.id,
-            request.mensaje,
-            discapacidad,
-            ctx.authorization,
-            request.hilo_id,
-            ctx.roles,
-            ctx.perfil,
-            request.limitacion,
-        )
+        async with turno_usuario(ctx.id):
+            resultado = await agent.procesar_mensaje(
+                ctx.id,
+                request.mensaje,
+                discapacidad,
+                ctx.authorization,
+                request.hilo_id,
+                ctx.roles,
+                ctx.perfil,
+                request.limitacion,
+            )
         return _chat_response(ctx, resultado, request.hilo_id)
     except HTTPException:
         raise
@@ -204,11 +206,12 @@ async def chat_stream(
     discapacidad = discapacidad_efectiva(
         ctx, request.disability_type, permitir_override=True
     )
+    reservar(ctx.id)
 
     async def generador():
         """Produce el flujo SSE: heartbeat inicial, eventos del agente y cierre."""
-        yield ": connected\n\n"
         try:
+            yield ": connected\n\n"
             async for evento in agent.procesar_mensaje_stream(
                 ctx.id,
                 request.mensaje,
@@ -226,6 +229,8 @@ async def chat_stream(
         except Exception as exc:
             error = {"evento": "error", "detalle": str(exc)}
             yield f"data: {json.dumps(error, ensure_ascii=False)}\n\n"
+        finally:
+            liberar(ctx.id)
 
     return StreamingResponse(
         generador(),
@@ -322,7 +327,7 @@ async def _borrar_todos(authorization: Optional[str], confirmar: bool):
             detail="Pasa confirmar=true para borrar todo el historial del usuario",
         )
     ctx = await resolver_contexto(authorization, require_auth=True)
-    borradas = await conversaciones.borrar_todas(ctx.id)
+    borradas = await conversaciones.borrar_todas(ctx.id, ids_alias=_ids_alias(ctx))
     return {"ok": True, "borradas": borradas}
 
 

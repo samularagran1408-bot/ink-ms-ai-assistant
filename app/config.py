@@ -104,6 +104,14 @@ class Settings:
     # que el chat no espere el timeout completo en cada petición.
     LLM_COOLDOWN_SEGUNDOS = _int("LLM_COOLDOWN_SEGUNDOS", 60)
 
+    # Cuántas llamadas al LLM pueden ir a la vez en este proceso. El resto espera
+    # LLM_QUEUE_WAIT_SEGUNDOS y, si no hay hueco, el chat sigue con motor local.
+    LLM_MAX_CONCURRENT = _int("LLM_MAX_CONCURRENT", 2)
+    LLM_QUEUE_WAIT_SEGUNDOS = _int("LLM_QUEUE_WAIT_SEGUNDOS", 8)
+
+    # Un mismo usuario no puede tener más de N turnos de chat en vuelo (429).
+    CHAT_MAX_INFLIGHT_PER_USER = _int("CHAT_MAX_INFLIGHT_PER_USER", 1)
+
     # Si true, el LLM reescribe también respuestas de intenciones ya resueltas
     # por el motor local (más tokens). Por defecto solo pulimos casos difíciles.
     LLM_SINTESIS_INTENIONES_CONOCIDAS = _bool("LLM_SINTESIS_INTENIONES_CONOCIDAS", False)

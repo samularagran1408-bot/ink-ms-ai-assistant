@@ -64,6 +64,9 @@ URLs con los nombres de los contenedores.
 | `LLM_MODEL` / `LLM_API_URL` | según el proveedor | Se autocompletan si no concuerdan con el proveedor |
 | `LLM_TIMEOUT` | `120` | Segundos de espera por respuesta |
 | `LLM_COOLDOWN_SEGUNDOS` | `60` | Pausa tras un fallo del proveedor |
+| `LLM_MAX_CONCURRENT` | `2` | Llamadas simultáneas al LLM en este proceso |
+| `LLM_QUEUE_WAIT_SEGUNDOS` | `8` | Espera máxima por un hueco; si no hay, motor local |
+| `CHAT_MAX_INFLIGHT_PER_USER` | `1` | Turnos de chat a la vez por usuario (HTTP 429) |
 | `LLM_SINTESIS_INTENIONES_CONOCIDAS` | `false` | Si `true`, el LLM reescribe también respuestas del motor local |
 | `CHAT_MAX_MENSAJES_POR_CONVERSACION` | `40` | Tope de mensajes guardados por hilo |
 | `CHAT_MAX_CONVERSACIONES_POR_USUARIO` | `10` | Cupo de hilos activos; el resto se archiva |

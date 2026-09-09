@@ -232,7 +232,7 @@ async def diagnostico():
     servicios = {
         "auth": f"{settings.AUTH_SERVICE_URL}/api/auth/validate",
         "users": f"{settings.USERS_SERVICE_URL}/api/internal/users/roles-by-email",
-        "sports": f"{settings.SPORTS_SERVICE_URL}/api/events",
+        "sports": f"{settings.SPORTS_SERVICE_URL}/api/events/count",
         "accessibility": f"{settings.ACCESSIBILITY_SERVICE_URL}/api/voice/commands",
         "reports": f"{settings.REPORTS_SERVICE_URL}/api/dashboard",
     }
@@ -273,7 +273,12 @@ async def diagnostico():
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 datos = (await client.get(servicios["sports"])).json()
-            eventos["eventos_publicados"] = len(datos) if isinstance(datos, list) else 0
+            if isinstance(datos, (int, float)):
+                eventos["eventos_publicados"] = int(datos)
+            elif isinstance(datos, dict) and "count" in datos:
+                eventos["eventos_publicados"] = int(datos["count"])
+            else:
+                eventos["eventos_publicados"] = None
         except Exception:
             eventos["eventos_publicados"] = None
 

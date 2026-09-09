@@ -12,6 +12,7 @@ intentar durante `LLM_COOLDOWN_SEGUNDOS`, de modo que un proveedor inaccesible
 no añade latencia a cada petición.
 """
 
+import asyncio
 import json
 import re
 import time
@@ -228,6 +229,15 @@ class LLMService:
     _ultimo_exito: Optional[float] = None
     _llamadas_ok: int = 0
     _llamadas_fallidas: int = 0
+    _en_curso: int = 0
+    _sema: asyncio.Semaphore | None = None
+
+    @classmethod
+    def _semaforo(cls) -> asyncio.Semaphore:
+        """Semáforo global: limita llamadas concurrentes al proveedor."""
+        if cls._sema is None:
+            cls._sema = asyncio.Semaphore(max(1, settings.LLM_MAX_CONCURRENT))
+        return cls._sema
 
     def __init__(self):
         """Lee clave, modelo, URL y timeout de settings y resuelve el proveedor."""
@@ -395,10 +405,45 @@ class LLMService:
         """
         self._validar_listo(ignorar_pausa=ignorar_pausa)
         headers = self._headers()
-        ultimo_error = ""
         modelos = self._modelos_a_probar()
         usar_tools = bool(tools)
+        sema = self._semaforo()
+        espera = max(0.5, float(settings.LLM_QUEUE_WAIT_SEGUNDOS))
+        try:
+            await asyncio.wait_for(sema.acquire(), timeout=espera)
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "LLM ocupado: demasiadas consultas a la vez"
+            ) from exc
+        LLMService._en_curso += 1
+        try:
+            return await self._completar_http(
+                mensajes,
+                headers,
+                modelos,
+                usar_tools,
+                tools,
+                tool_choice,
+                temperatura,
+                max_tokens,
+            )
+        finally:
+            LLMService._en_curso = max(0, LLMService._en_curso - 1)
+            sema.release()
 
+    async def _completar_http(
+        self,
+        mensajes: list[dict[str, Any]],
+        headers: dict[str, str],
+        modelos: list[str],
+        usar_tools: bool,
+        tools: Optional[list[dict[str, Any]]],
+        tool_choice: Optional[str],
+        temperatura: float,
+        max_tokens: Optional[int],
+    ) -> ChatCompletionResult:
+        """POST al proveedor. El llamador ya tiene el cupo del semáforo."""
+        ultimo_error = ""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for i, modelo in enumerate(modelos):
                 if _es_modelo_free(modelo) and time.time() < LLMService._free_cuota_hasta:
@@ -616,6 +661,12 @@ class LLMService:
             "tool_calling": {
                 "habilitado": settings.LLM_TOOL_CALLING_ENABLED,
                 "max_rondas": settings.LLM_TOOL_MAX_RONDAS,
+            },
+            "concurrencia": {
+                "max": settings.LLM_MAX_CONCURRENT,
+                "en_curso": cls._en_curso,
+                "cola_espera_segundos": settings.LLM_QUEUE_WAIT_SEGUNDOS,
+                "chat_inflight_por_usuario": settings.CHAT_MAX_INFLIGHT_PER_USER,
             },
         }
 
