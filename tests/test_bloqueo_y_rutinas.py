@@ -398,6 +398,62 @@ def _nombres(rutina: dict) -> set[str]:
     }
 
 
+def test_cupo_horario_avisa_y_luego_bloquea():
+    """20 mensajes/hora: aviso al acercarse y 429 con espera de 1 hora al superar."""
+    from fastapi import HTTPException
+
+    from app.config import settings
+    from app.services import chat_limite
+
+    original = chat_limite._ahora
+    original_espera = settings.CHAT_ESPERA_LIMITE_SEGUNDOS
+    settings.CHAT_ESPERA_LIMITE_SEGUNDOS = 3600
+    chat_limite._envios.clear()
+    chat_limite._bloqueo_hasta.clear()
+    chat_limite._en_curso.clear()
+    uid = "tester-cupo"
+    t0 = 1_700_000_000.0
+    chat_limite._ahora = lambda: t0
+    try:
+        for i in range(16):
+            estado = chat_limite.consumir_cupo_hora(uid)
+            assert estado["usados"] == i + 1
+            assert estado["aviso"] is None
+        aviso = chat_limite.consumir_cupo_hora(uid)
+        assert aviso["aviso"]
+        assert "quedan" in aviso["aviso"]
+        chat_limite.consumir_cupo_hora(uid)
+        chat_limite.consumir_cupo_hora(uid)
+        tope = chat_limite.consumir_cupo_hora(uid)
+        assert tope["usados"] == 20
+        assert tope["restantes"] == 0
+        try:
+            chat_limite.consumir_cupo_hora(uid)
+            raise AssertionError("debía bloquear el mensaje 21")
+        except HTTPException as exc:
+            assert exc.status_code == 429
+            assert isinstance(exc.detail, dict)
+            assert exc.detail["codigo"] == "chat_limite_hora"
+            assert "Espera" in exc.detail["mensaje"]
+            assert "hora" in exc.detail["mensaje"].lower()
+            assert exc.detail["retry_after_segundos"] >= 3500
+        chat_limite._ahora = lambda: t0 + 3599
+        try:
+            chat_limite.consumir_cupo_hora(uid)
+            raise AssertionError("aún debía estar bloqueado antes de 1 hora")
+        except HTTPException as exc:
+            assert exc.status_code == 429
+        chat_limite._ahora = lambda: t0 + 3601
+        otra = chat_limite.consumir_cupo_hora(uid)
+        assert otra["usados"] == 1
+        assert otra["aviso"] is None
+    finally:
+        settings.CHAT_ESPERA_LIMITE_SEGUNDOS = original_espera
+        chat_limite._ahora = original
+        chat_limite._envios.clear()
+        chat_limite._bloqueo_hasta.clear()
+
+
 def test_una_rutina_no_repite_ejercicios():
     rutina = generar_rutina(
         "motriz",

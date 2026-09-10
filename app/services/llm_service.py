@@ -888,6 +888,8 @@ def system_prompt(disability_type: str = "general", sistema_extra: str = "") -> 
         "- Mantén continuidad con el historial de la conversación.\n"
         "- Suena a chatbot real: evita plantillas repetidas y no digas que no entiendes "
         "si puedes aportar una respuesta útil.\n"
+        "- No inventes límites de uso, cuotas ni tiempos de espera del chat. "
+        "Si hay un tope, el sistema lo avisará aparte.\n"
         f"- Adaptación requerida: {contexto}"
     )
     if sistema_extra:

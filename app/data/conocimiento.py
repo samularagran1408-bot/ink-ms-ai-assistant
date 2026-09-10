@@ -50,7 +50,9 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
         "respuestas": [
             "Puedo ayudarte con: rutinas adaptadas, eventos, deportes y adaptaciones, "
             "quices de aptitud, tu progreso y, si eres staff, números de la plataforma "
-            "(usuarios, asociaciones por deporte, dashboard).",
+            "(usuarios, asociaciones por deporte, dashboard). "
+            "Puedes enviar hasta 20 mensajes por hora; si llegas al tope, el chat te "
+            "avisará y esperarás 1 hora.",
             "Estas son mis funciones: crear rutinas personalizadas, sugerirte eventos "
             "compatibles con tu perfil, explicarte adaptaciones deporte-discapacidad y "
             "guiarte en la verificación como entrenador u organizador.",

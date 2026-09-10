@@ -128,6 +128,10 @@ class Settings:
 
     # Un mismo usuario no puede tener más de N turnos de chat en vuelo (429).
     CHAT_MAX_INFLIGHT_PER_USER = _int("CHAT_MAX_INFLIGHT_PER_USER", 1)
+    # Cupo horario: al superarlo hay aviso y espera (no lo inventa el LLM).
+    CHAT_MAX_MENSAJES_POR_HORA = _int("CHAT_MAX_MENSAJES_POR_HORA", 20)
+    CHAT_ESPERA_LIMITE_SEGUNDOS = _int("CHAT_ESPERA_LIMITE_SEGUNDOS", 3600)
+    CHAT_AVISO_RESTANTES = _int("CHAT_AVISO_RESTANTES", 3)
 
     # Si true, el LLM reescribe también respuestas de intenciones ya resueltas
     # por el motor local (más tokens). Por defecto solo pulimos casos difíciles.

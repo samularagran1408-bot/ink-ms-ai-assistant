@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.agents.chatbot_agent import ChatbotAgent
 from app.deps.contexto import discapacidad_efectiva, resolver_contexto
 from app.models.chat import ChatResponse
-from app.services.chat_limite import liberar, reservar, turno_usuario
+from app.services.chat_limite import consumir_cupo_hora, estado_cupo, liberar, reservar, turno_usuario
 from app.services.conversacion_service import ConversacionService
 from app.tools.cards import construir_cards
 from app.tools.mcp import descripcion_protocolo, mcp_del_turno
@@ -93,7 +93,12 @@ class ChatRequestAuth(BaseModel):
         return self.conversacion_id or self.session_id
 
 
-def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatResponse:
+def _chat_response(
+    ctx,
+    resultado,
+    request_hilo_id: Optional[str],
+    cupo: Optional[dict] = None,
+) -> ChatResponse:
     """Empaqueta el dict del agente en ChatResponse con cards, MCP y perfil de sesión."""
     cid = resultado.get("conversacion_id") or request_hilo_id or "nueva"
     herramientas = resultado.get("herramientas_usadas") or []
@@ -108,6 +113,7 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
         fuente=resultado.get("fuente", "motor_local"),
         roles=ctx.roles,
     )
+    cupo = cupo or estado_cupo(ctx.id)
     return ChatResponse(
         conversacion_id=cid,
         respuesta=resultado["respuesta"],
@@ -133,17 +139,21 @@ def _chat_response(ctx, resultado, request_hilo_id: Optional[str]) -> ChatRespon
             "modelo_llm": resultado.get("modelo_llm"),
             "session_id": cid,
             "cards": cards,
+            "cupo": cupo,
         },
         herramientas_usadas=herramientas,
         cards=cards,
         mcp=mcp,
         cuerpo=(datos_crudos.get("cuerpo") if isinstance(datos_crudos, dict) else None)
         or resultado.get("cuerpo"),
+        aviso=cupo.get("aviso") if isinstance(cupo, dict) else None,
+        cupo=cupo,
     )
 
 
 def _lista_hilos(usuario_id: str, items: list) -> dict:
     """Arma el listado de conversaciones con alias `sessions` y cupos del servicio."""
+    estado = estado_cupo(usuario_id)
     return {
         "usuario_id": usuario_id,
         "total": len(items),
@@ -153,6 +163,10 @@ def _lista_hilos(usuario_id: str, items: list) -> dict:
             "max_mensajes_por_conversacion": conversaciones.max_mensajes,
             "max_conversaciones_activas": conversaciones.max_conversaciones,
             "turnos_enviados_al_llm": conversaciones.turnos_llm,
+            "max_mensajes_por_hora": estado["maximo"],
+            "espera_limite_segundos": estado["espera_segundos"],
+            "usados_hora": estado["usados"],
+            "aviso": estado.get("aviso"),
         },
     }
 
@@ -174,6 +188,7 @@ async def chat(
             ctx, request.disability_type, permitir_override=True
         )
         async with turno_usuario(ctx.id):
+            cupo = consumir_cupo_hora(ctx.id)
             resultado = await agent.procesar_mensaje(
                 ctx.id,
                 request.mensaje,
@@ -184,7 +199,7 @@ async def chat(
                 ctx.perfil,
                 request.limitacion,
             )
-        return _chat_response(ctx, resultado, request.hilo_id)
+        return _chat_response(ctx, resultado, request.hilo_id, cupo)
     except HTTPException:
         raise
     except Exception as exc:
@@ -207,6 +222,11 @@ async def chat_stream(
         ctx, request.disability_type, permitir_override=True
     )
     reservar(ctx.id)
+    try:
+        cupo = consumir_cupo_hora(ctx.id)
+    except HTTPException:
+        liberar(ctx.id)
+        raise
 
     async def generador():
         """Produce el flujo SSE: heartbeat inicial, eventos del agente y cierre."""
@@ -223,7 +243,7 @@ async def chat_stream(
                 request.limitacion,
             ):
                 if evento.get("evento") == "respuesta" and isinstance(evento.get("datos"), dict):
-                    wrapped = _chat_response(ctx, evento["datos"], request.hilo_id)
+                    wrapped = _chat_response(ctx, evento["datos"], request.hilo_id, cupo)
                     evento = {**evento, "datos": wrapped.model_dump()}
                 yield f"data: {json.dumps(evento, ensure_ascii=False, default=str)}\n\n"
         except Exception as exc:

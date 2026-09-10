@@ -48,6 +48,14 @@ class ChatResponse(BaseModel):
         default=None,
         description="Dibujo del cuerpo con zonas de dolor/limitación en rojo",
     )
+    aviso: Optional[str] = Field(
+        default=None,
+        description="Aviso de cupo horario (se muestra al usuario, no lo inventa el LLM)",
+    )
+    cupo: Optional[dict[str, Any]] = Field(
+        default=None,
+        description="Uso del límite de mensajes por hora",
+    )
 
 
 class Mensaje(BaseModel):
