@@ -7,6 +7,7 @@ devuelven la misma rutina.
 """
 
 import random
+import re
 from typing import Any, Iterable, Optional
 
 from app.data.ejercicios import (
@@ -16,7 +17,7 @@ from app.data.ejercicios import (
     PERFILES_DISCAPACIDAD,
 )
 from app.nlp.discapacidad import canonizar, descripcion
-from app.nlp.texto import normalizar
+from app.nlp.texto import normalizar, raiz, tokenizar
 
 NIVEL_ORDEN = {"principiante": 1, "intermedio": 2, "avanzado": 3}
 
@@ -31,22 +32,42 @@ _INCOMPATIBLES_POSICION: dict[str, tuple[str, ...]] = {
 }
 
 _ALIAS_OBJETIVO: dict[str, tuple[str, ...]] = {
-    "fuerza": ("fuerza", "fortalecer", "musculo", "muscular", "tonificar", "potencia"),
+    "fuerza": ("fuerza", "fortalecer", "musculo", "muscular", "tonificar", "hipertrofia"),
     "resistencia": (
-        "resistencia", "cardio", "aerobico", "aguante", "fondo", "capacidad",
-        # Actividades de marcha / desplazamiento (no fuerza)
+        "resistencia", "cardio", "aerobico", "aguante", "fondo",
         "caminar", "caminata", "paseo", "pasear", "marcha", "andar", "trotar",
         "correr", "footing", "bicicleta", "pedalear", "remo",
     ),
-    "movilidad": ("movilidad", "amplitud", "articular", "rango"),
+    "movilidad": ("movilidad", "amplitud", "articular", "rango articular"),
     "flexibilidad": ("flexibilidad", "estirar", "estiramiento", "elasticidad"),
     "equilibrio": (
-        "equilibrio", "estabilidad", "postural", "coordinacion",
-        # Reflejos / agilidad → control postural y reacción
-        "reflejos", "reflejo", "agilidad", "reaccion", "propiocepcion", "balance",
+        "equilibrio", "estabilidad", "postural", "balance", "propiocepcion",
     ),
-    "rehabilitacion": ("rehabilitacion", "recuperar", "recuperacion", "lesion", "dolor", "suave", "terapia"),
+    "rehabilitacion": (
+        "rehabilitacion", "recuperar", "recuperacion", "lesion", "dolor", "suave", "terapia",
+    ),
     "peso": ("peso", "adelgazar", "grasa", "calorias", "quemar"),
+    "reflejos": (
+        "reflejos", "reflejo", "tiempo de reaccion", "reaccion", "reactivo",
+        "estimular reflejos",
+    ),
+    "velocidad": (
+        "velocidad", "rapidez", "rapido", "sprint", "explosivo", "acelerar",
+    ),
+    "agilidad": (
+        "agilidad", "agil", "cambio de direccion", "cambios de direccion", "esquivar",
+    ),
+    "potencia": ("potencia", "explosividad", "potente"),
+    "coordinacion": (
+        "coordinacion", "coordinar", "ojo mano", "oculo manual", "oculomanual",
+    ),
+    "core": ("core", "tronco", "abdomen", "abdominales", "zona media"),
+}
+
+_RUIDO_PEDIDO = {
+    "rutina", "plan", "sesion", "entrenamiento", "entrenar", "generar", "genera",
+    "quiero", "dame", "necesito", "crear", "hazme", "hacer", "objetivo", "tipo",
+    "minutos", "nivel", "dia", "semana", "hoy", "adaptada", "adaptado", "inclusiva",
 }
 
 _ALIAS_POSICION: dict[str, tuple[str, ...]] = {
@@ -75,26 +96,86 @@ def _detectar(texto: str, alias: dict[str, tuple[str, ...]]) -> Optional[str]:
     return None
 
 
+def _score_alias_en_texto(limpio: str, tokens: set[str], raices_txt: set[str], palabra: str) -> float:
+    """Puntúa un alias: coincidencia exacta de token > palabra completa > raíz."""
+    alias = normalizar(palabra)
+    if not alias:
+        return 0.0
+    partes = alias.split()
+    if len(partes) > 1:
+        return 3.2 + 0.2 * len(partes) if alias in limpio else 0.0
+    if alias in tokens:
+        return 2.8
+    if re.search(rf"\b{re.escape(alias)}\b", limpio):
+        return 2.4
+    if raiz(alias) in raices_txt and len(alias) >= 5:
+        return 2.0
+    return 0.0
+
+
+def _objetivos_ranqueados(texto: str, umbral: float = 2.0) -> list[str]:
+    """Claves de objetivo ordenadas por qué tan claro las pidió el usuario."""
+    limpio = normalizar(texto or "")
+    if not limpio:
+        return []
+    tokens = set(tokenizar(limpio))
+    raices_txt = {raiz(t) for t in tokens}
+    puntuaciones: dict[str, float] = {}
+    for clave, palabras in _ALIAS_OBJETIVO.items():
+        score = 0.0
+        for palabra in palabras:
+            score = max(score, _score_alias_en_texto(limpio, tokens, raices_txt, palabra))
+        if clave in tokens:
+            score = max(score, 3.0)
+        if score >= umbral:
+            puntuaciones[clave] = score
+    return [k for k, _ in sorted(puntuaciones.items(), key=lambda x: (-x[1], x[0]))]
+
+
 def interpretar_objetivo(texto: str) -> str:
-    """Clave de objetivo (fuerza, resistencia…) o «general» si no hay coincidencia."""
-    return _detectar(texto, _ALIAS_OBJETIVO) or "general"
+    """Clave de objetivo (fuerza, reflejos, velocidad…) o «general» si no hay coincidencia."""
+    ranked = _objetivos_ranqueados(texto)
+    return ranked[0] if ranked else "general"
 
 
 def interpretar_objetivos(objetivo_texto: str, tipo_texto: str = "") -> tuple[str, Optional[str]]:
-    """Objetivo principal + secundario.
+    """Objetivo principal + secundario a partir del texto libre del usuario.
 
     El campo `objetivo` manda; `tipo` aporta un segundo énfasis (p. ej. caminar +
-    reflejos → resistencia + equilibrio). Si solo uno matchea, ese es el principal.
+    reflejos → resistencia + reflejos). Si el usuario nombra dos metas en el
+    mismo campo, la segunda pasa a secundario.
     """
-    prim = interpretar_objetivo(objetivo_texto)
-    sec = interpretar_objetivo(tipo_texto)
-    if prim != "general":
-        return prim, (sec if sec not in ("general", prim) else None)
-    if sec != "general":
-        return sec, None
-    # Ambos en el mismo string por si el cliente pone todo en un solo campo
-    mezclado = interpretar_objetivo(f"{objetivo_texto} {tipo_texto}")
-    return mezclado, None
+    de_obj = _objetivos_ranqueados(objetivo_texto)
+    de_tipo = _objetivos_ranqueados(tipo_texto)
+    if de_obj:
+        prim = de_obj[0]
+        resto = [c for c in de_obj[1:] + de_tipo if c != prim]
+        return prim, (resto[0] if resto else None)
+    if de_tipo:
+        prim = de_tipo[0]
+        resto = [c for c in de_tipo[1:] if c != prim]
+        return prim, (resto[0] if resto else None)
+    mezclado = _objetivos_ranqueados(f"{objetivo_texto} {tipo_texto}")
+    if not mezclado:
+        return "general", None
+    prim = mezclado[0]
+    sec = mezclado[1] if len(mezclado) > 1 else None
+    return prim, sec
+
+
+def _texto_objetivo_visible(objetivo: str, objetivo_texto: str, tipo_texto: str) -> str:
+    """Etiqueta humana: canónica si hay clave, o el pedido libre si no encajó en el catálogo."""
+    if objetivo != "general":
+        return OBJETIVOS.get(objetivo, OBJETIVOS["general"])
+    crudo = (objetivo_texto or tipo_texto or "").strip()
+    limpio = re.sub(
+        r"(?i)^(quiero|necesito|dame|genera|hazme|crea)?\s*"
+        r"(una\s+|un\s+)?(rutina|plan|sesion|entrenamiento)?\s*"
+        r"(de|para|con)?\s*",
+        "",
+        crudo,
+    ).strip(" .:-")
+    return limpio[:80] if limpio else OBJETIVOS["general"]
 
 
 def interpretar_posicion(texto: str) -> Optional[str]:
@@ -152,6 +233,40 @@ def adaptacion_de(ejercicio: dict, discapacidad: str) -> str:
     return pauta
 
 
+def _afin_pedido(ejercicio: dict, pedido: str) -> float:
+    """Suma puntos si el ejercicio habla el mismo idioma que el pedido libre."""
+    limpio = normalizar(pedido or "")
+    tokens = [t for t in tokenizar(limpio) if t not in _RUIDO_PEDIDO and len(t) >= 4]
+    if not tokens:
+        return 0.0
+    raices_p = {raiz(t) for t in tokens}
+    blob = normalizar(
+        " ".join(
+            [
+                str(ejercicio.get("nombre") or ""),
+                " ".join(str(x) for x in (ejercicio.get("objetivos") or [])),
+                str(ejercicio.get("categoria") or ""),
+                " ".join(str(x) for x in (ejercicio.get("musculos") or [])),
+                str(ejercicio.get("instrucciones") or ""),
+            ]
+        )
+    )
+    raices_ej = {raiz(t) for t in tokenizar(blob)}
+    score = 0.0
+    for r in raices_p:
+        if r in raices_ej or r in blob:
+            score += 1.4
+    objetivos_ej = set(ejercicio.get("objetivos") or [])
+    objetivos_ej.add(ejercicio.get("categoria") or "")
+    for clave, palabras in _ALIAS_OBJETIVO.items():
+        if clave not in objetivos_ej:
+            continue
+        if any(_score_alias_en_texto(limpio, set(tokens), raices_p, p) >= 2.0 for p in palabras):
+            score += 2.2
+            break
+    return min(score, 8.0)
+
+
 def _puntuar(
     ejercicio: dict,
     objetivo: str,
@@ -159,14 +274,15 @@ def _puntuar(
     nivel: str,
     discapacidad: str,
     objetivo_secundario: Optional[str] = None,
+    pedido: str = "",
 ) -> float:
     """Puntúa cuánto encaja el ejercicio con objetivo, posición, nivel y discapacidad."""
     puntaje = 0.0
     objetivos_ej = ejercicio.get("objetivos") or []
     # El objetivo pedido debe pesar más que el sesgo del perfil de discapacidad
-    # (p. ej. motriz prioriza "fuerza", pero si pides reflejos/caminar no debe ganar).
+    # (p. ej. motriz prioriza "fuerza", pero si pides reflejos no debe ganar).
     if objetivo in objetivos_ej:
-        puntaje += 6.0
+        puntaje += 6.5
     if objetivo_secundario and objetivo_secundario in objetivos_ej:
         puntaje += 3.5
     if ejercicio.get("categoria") == objetivo:
@@ -175,6 +291,8 @@ def _puntuar(
         puntaje += 1.5
     if objetivo == "general" and not objetivo_secundario:
         puntaje += 1.0
+    if pedido:
+        puntaje += _afin_pedido(ejercicio, pedido)
     if posicion and ejercicio.get("posicion") == posicion:
         puntaje += 2.5
     if ejercicio.get("nivel") == nivel:
@@ -193,9 +311,17 @@ def _puntuar(
         puntaje += 1.5 + (1.5 if len(permitidas) <= 2 else 0.0)
 
     categorias = perfil["categorias_prioritarias"]
-    # Solo aplica el sesgo del perfil cuando el objetivo es general; si el usuario
-    # pidió algo concreto, no empujamos a fuerza/core por discapacidad.
-    if objetivo == "general" and not objetivo_secundario and categorias:
+    # Solo aplica el sesgo del perfil cuando no hay un objetivo concreto ni un
+    # pedido con contenido (si pidió reflejos, no empujamos a fuerza).
+    pedido_con_contenido = bool(
+        [t for t in tokenizar(normalizar(pedido or "")) if t not in _RUIDO_PEDIDO]
+    )
+    if (
+        objetivo == "general"
+        and not objetivo_secundario
+        and not pedido_con_contenido
+        and categorias
+    ):
         if ejercicio.get("categoria") in categorias:
             puntaje += 2.5 - 0.5 * categorias.index(ejercicio["categoria"])
 
@@ -213,6 +339,7 @@ def _sample_ponderado(
     azar: random.Random,
     objetivo_secundario: Optional[str] = None,
     excluir_ids: Optional[set[str]] = None,
+    pedido: str = "",
 ) -> list[dict]:
     """Elige con peso por puntaje (no siempre el top fijo) para variar rutinas."""
     if not pool or cantidad <= 0:
@@ -240,7 +367,9 @@ def _sample_ponderado(
     for e in pool:
         if _fuera(e):
             continue
-        base = _puntuar(e, objetivo, posicion, nivel, discapacidad, objetivo_secundario)
+        base = _puntuar(
+            e, objetivo, posicion, nivel, discapacidad, objetivo_secundario, pedido
+        )
         # Ruido controlado: suficiente para variar, no para elegir basura
         score = max(0.05, base + azar.uniform(-1.2, 1.2))
         puntuados.append((score, e))
@@ -309,6 +438,7 @@ def _seleccionar(
     azar: random.Random,
     objetivo_secundario: Optional[str] = None,
     excluir_ids: Optional[set[str]] = None,
+    pedido: str = "",
 ) -> list[dict]:
     """Elige `cantidad` ejercicios con variedad entre peticiones."""
     pool = list(candidatos)
@@ -325,6 +455,7 @@ def _seleccionar(
         azar,
         objetivo_secundario,
         excluir_ids,
+        pedido,
     )
 
 
@@ -392,6 +523,12 @@ def _recomendaciones(
         "equilibrio": "Ten siempre un apoyo al alcance de la mano antes de retirar la ayuda.",
         "rehabilitacion": "Ve al rango libre de dolor y para en cuanto la molestia suba de intensidad.",
         "peso": "El gasto viene de la constancia semanal, no de exprimir una sola sesión.",
+        "reflejos": "La calidad está en reaccionar pronto, no en hacer el gesto más grande.",
+        "velocidad": "Cada intervalo rápido dura poco: llega fresco al siguiente y suelta al frenar.",
+        "agilidad": "Cambia de dirección con control; primero preciso, después más vivo.",
+        "potencia": "El impulso es corto y nítido; la vuelta al inicio, lenta y controlada.",
+        "coordinacion": "Si se desordena el gesto, baja el ritmo y vuelve a encadenar los dos lados.",
+        "core": "El tronco no se mueve de más: resiste antes de añadir velocidad.",
         "general": "Progresa de menos a más y mantén la técnica controlada en todo el recorrido.",
     }
     consejos.append(por_objetivo.get(objetivo, por_objetivo["general"]))
@@ -484,6 +621,7 @@ def generar_rutina(
         if not lista:
             por_fase[fase] = list(aptos)
 
+    pedido = f"{objetivo_texto} {tipo_texto}".strip()
     excluidos = set(excluir_ids or ())
     seleccion: dict[str, list[dict]] = {}
     for fase, cantidad in (
@@ -501,6 +639,7 @@ def generar_rutina(
             azar,
             objetivo_secundario,
             excluidos,
+            pedido,
         )
         seleccion[fase] = elegidos
         for e in elegidos:
@@ -536,8 +675,8 @@ def generar_rutina(
     pauta = PAUTAS_DISCAPACIDAD.get(clave_discapacidad, PAUTAS_DISCAPACIDAD["general"])
     avisos = sorted({e["seguridad"] for e in ejercicios_planos if e["seguridad"]})
 
-    etiqueta_obj = OBJETIVOS.get(objetivo, OBJETIVOS["general"])
-    if objetivo_secundario:
+    etiqueta_obj = _texto_objetivo_visible(objetivo, objetivo_texto, tipo_texto)
+    if objetivo != "general" and objetivo_secundario:
         etiqueta_obj = (
             f"{etiqueta_obj} + {OBJETIVOS.get(objetivo_secundario, objetivo_secundario)}"
         )
@@ -547,6 +686,7 @@ def generar_rutina(
         "objetivo": etiqueta_obj,
         "objetivo_clave": objetivo,
         "objetivo_secundario": objetivo_secundario,
+        "objetivo_pedido": (objetivo_texto or tipo_texto or "").strip() or None,
         "nivel": nivel_final,
         "discapacidad": clave_discapacidad,
         "discapacidad_descripcion": descripcion(clave_discapacidad),

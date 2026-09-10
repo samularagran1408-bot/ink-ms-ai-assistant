@@ -41,16 +41,21 @@ async def _leer(coleccion: str, filtro: dict, limite: int = 500) -> list[dict[st
 
 
 async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
-    """Ejercicios activos de Mongo; si hay pocos válidos, usa el catálogo del código."""
+    """Catálogo embebido más ejercicios extra de Mongo (ids que no están en código).
+
+    El código es la fuente de los ejercicios oficiales (tags y objetivos nuevos
+    llegan sin re-sembrar). Mongo solo aporta piezas personalizadas con otro `id`.
+    """
+    por_id: dict[str, dict[str, Any]] = {e["id"]: dict(e) for e in CATALOGO_EJERCICIOS}
     documentos = await _leer(COL_EJERCICIOS, {"activo": True})
-    validos = [
-        d for d in documentos
-        if all(d.get(c) not in (None, "") for c in ("id", "nombre", "fase"))
-    ]
-    # Si Mongo tiene basura o catálogo a medias, usa el del código.
-    if len(validos) < 10:
-        return CATALOGO_EJERCICIOS
-    return validos
+    for d in documentos:
+        eid = d.get("id")
+        if not eid or not d.get("nombre") or not d.get("fase"):
+            continue
+        if eid in por_id:
+            continue
+        por_id[str(eid)] = d
+    return list(por_id.values())
 
 
 async def obtener_conocimiento(intencion: str) -> Optional[dict[str, Any]]:

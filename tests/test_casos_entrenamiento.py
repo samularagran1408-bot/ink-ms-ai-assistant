@@ -38,6 +38,8 @@ def test_detectar_frases_simples():
     assert detectar_comando_entrenamiento("Cuál es mi riesgo de lesión") == "evaluar_riesgo"
     assert detectar_comando_entrenamiento("Tengo dolor al entrenar") == "riesgo_dolor"
     assert detectar_comando_entrenamiento("Genera una rutina de fuerza") == "rutina_objetivo"
+    assert detectar_comando_entrenamiento("Genera una rutina de reflejos") == "rutina_objetivo"
+    assert detectar_comando_entrenamiento("Quiero una rutina de velocidad") == "rutina_objetivo"
     assert detectar_comando_entrenamiento("Plan semanal 3 veces por semana") == "plan_semanal"
     assert detectar_comando_entrenamiento("Estoy fatigado RPE 9") == "rpe_alto"
     assert detectar_comando_entrenamiento("La sesión estuvo fácil RPE 3") == "rpe_bajo"

@@ -15,16 +15,22 @@ from app.services.user_service import UserService
 
 NIVELES = ("principiante", "intermedio", "avanzado")
 
-# Variación semanal/diaria afín al objetivo del usuario (no forzar "fuerza" si pidió reflejos)
+# Variación semanal/diaria afín al objetivo del usuario (no forzar "fuerza")
 _VARIACION_POR_OBJETIVO = {
-    "fuerza": ("fuerza", "resistencia", "core"),
-    "resistencia": ("resistencia", "movilidad", "fuerza"),
+    "fuerza": ("fuerza", "potencia", "core"),
+    "resistencia": ("resistencia", "velocidad", "movilidad"),
     "movilidad": ("movilidad", "flexibilidad", "equilibrio"),
     "flexibilidad": ("flexibilidad", "movilidad", "equilibrio"),
-    "equilibrio": ("equilibrio", "movilidad", "resistencia"),
+    "equilibrio": ("equilibrio", "core", "agilidad"),
     "rehabilitacion": ("rehabilitacion", "movilidad", "flexibilidad"),
     "peso": ("peso", "resistencia", "fuerza"),
-    "general": ("fuerza", "resistencia", "movilidad"),
+    "reflejos": ("reflejos", "agilidad", "coordinacion"),
+    "velocidad": ("velocidad", "agilidad", "potencia"),
+    "agilidad": ("agilidad", "reflejos", "velocidad"),
+    "potencia": ("potencia", "fuerza", "velocidad"),
+    "coordinacion": ("coordinacion", "reflejos", "equilibrio"),
+    "core": ("core", "equilibrio", "fuerza"),
+    "general": ("movilidad", "equilibrio", "resistencia"),
 }
 
 
@@ -78,11 +84,11 @@ class PlanesAgent:
             for dia in range(1, sesiones_por_semana + 1):
                 semilla = hash(f"{usuario_id}-{semana}-{dia}-{objetivo}") % 10_000_000
                 enfoque = variacion[(dia - 1) % len(variacion)]
-                # Objetivo del usuario manda; el enfoque del día aporta variedad afín
+                # El texto del usuario manda siempre; el enfoque del día solo aporta variedad
                 rutina = generar_rutina(
                     discapacidad=discapacidad_final,
-                    objetivo_texto=objetivo if objetivo_clave != "general" else enfoque,
-                    tipo_texto=enfoque if objetivo_clave != "general" else "",
+                    objetivo_texto=objetivo or enfoque,
+                    tipo_texto=enfoque,
                     nivel=nivel_semana,
                     duracion_minutos=duracion_minutos + (5 if semana > 2 else 0),
                     semilla=semilla,
@@ -98,8 +104,8 @@ class PlanesAgent:
                 if rutina.get("total_ejercicios", 0) < 4 and ya_usados:
                     rutina = generar_rutina(
                         discapacidad=discapacidad_final,
-                        objetivo_texto=objetivo if objetivo_clave != "general" else enfoque,
-                        tipo_texto=enfoque if objetivo_clave != "general" else "",
+                        objetivo_texto=objetivo or enfoque,
+                        tipo_texto=enfoque,
                         nivel=nivel_semana,
                         duracion_minutos=duracion_minutos + (5 if semana > 2 else 0),
                         semilla=semilla,
@@ -205,6 +211,7 @@ class PlanesAgent:
             f"Resume en 2 frases un plan de entrenamiento inclusivo para {nombre}: "
             f"{plan['semanas']} semanas, {plan['sesiones_por_semana']} sesiones/semana, "
             f"objetivo {plan['objetivo']}, discapacidad {plan['usuario']['disability']}. "
+            "Habla de ESE objetivo (si pidió reflejos, no hables de fuerza). "
             "Sin Markdown."
         )
         return await self.llm.texto(prompt, plan["usuario"]["disability"]) or base

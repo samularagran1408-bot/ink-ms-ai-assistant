@@ -94,11 +94,14 @@ class RutinasAgent:
             return None
 
         listado = ", ".join(e["nombre"] for e in rutina["ejercicios"])
+        pedido = rutina.get("objetivo_pedido") or rutina.get("objetivo")
         prompt = (
             f"Escribe en 3 frases una nota de acompañamiento para {nombre}, que va a "
-            f"realizar esta sesión: {listado}. Objetivo: {rutina['objetivo']}. "
+            f"realizar esta sesión: {listado}. "
+            f"Objetivo que pidió: {pedido}. Etiqueta de la sesión: {rutina['objetivo']}. "
             f"Nivel: {rutina['nivel']}. No inventes ejercicios distintos a los listados "
-            "ni des cifras de series o repeticiones. Varía el tono; no uses siempre "
-            "las mismas frases de ánimo."
+            "ni des cifras de series o repeticiones. Alinea el tono con el objetivo pedido "
+            "(si pidió reflejos o velocidad, no hables de hipertrofia ni de fuerza genérica). "
+            "Varía el tono; no uses siempre las mismas frases de ánimo."
         )
         return await self.llm.texto(prompt, rutina["discapacidad"], temperatura=0.85)

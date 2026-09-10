@@ -158,6 +158,57 @@ def test_catalogo_de_ejercicios_es_consistente():
         assert ejercicio["instrucciones"]
 
 
+def test_interpreta_objetivos_libres():
+    """Reflejos, velocidad y agilidad son claves propias, no un alias de fuerza."""
+    from app.motor.rutinas import interpretar_objetivo, interpretar_objetivos
+
+    assert interpretar_objetivo("reflejos") == "reflejos"
+    assert interpretar_objetivo("quiero mejorar mis reflejos") == "reflejos"
+    assert interpretar_objetivo("velocidad") == "velocidad"
+    assert interpretar_objetivo("agilidad") == "agilidad"
+    assert interpretar_objetivo("potencia") == "potencia"
+    assert interpretar_objetivo("coordinacion") == "coordinacion"
+    assert interpretar_objetivo("fuerza") == "fuerza"
+    prim, sec = interpretar_objetivos("reflejos", "agilidad")
+    assert prim == "reflejos"
+    assert sec == "agilidad"
+
+
+def test_rutina_de_reflejos_elige_ejercicios_de_reaccion():
+    """Una sesión de reflejos no se disfraza de hipertrofia."""
+    from app.motor.rutinas import generar_rutina
+
+    por_id = {e["id"]: e for e in CATALOGO_EJERCICIOS}
+    reflejos = generar_rutina(
+        "motriz", "reflejos", catalogo=CATALOGO_EJERCICIOS, semilla=7
+    )
+    fuerza = generar_rutina(
+        "motriz", "fuerza", catalogo=CATALOGO_EJERCICIOS, semilla=7
+    )
+    assert reflejos["objetivo_clave"] == "reflejos"
+    assert "reflejo" in reflejos["objetivo"].lower()
+    principales = [
+        e["id"] for e in reflejos["ejercicios"] if e.get("fase") == "principal" and e.get("id")
+    ]
+    tagged = [
+        i for i in principales
+        if "reflejos" in (por_id.get(i, {}).get("objetivos") or [])
+    ]
+    assert tagged, "La sesión de reflejos debe incluir ejercicios etiquetados así"
+    assert reflejos["objetivo_clave"] != fuerza["objetivo_clave"]
+
+
+def test_rutina_de_velocidad_no_cae_en_general():
+    """Velocidad es un objetivo de primera clase."""
+    from app.motor.rutinas import generar_rutina
+
+    rutina = generar_rutina(
+        "motriz", "velocidad", catalogo=CATALOGO_EJERCICIOS, semilla=9
+    )
+    assert rutina["objetivo_clave"] == "velocidad"
+    assert "velocidad" in rutina["objetivo"].lower()
+
+
 def test_banco_de_quiz_es_consistente():
     """Cada banco tiene ids únicos, ≥20 preguntas y una respuesta correcta válida."""
     for rol, banco in BANCOS.items():

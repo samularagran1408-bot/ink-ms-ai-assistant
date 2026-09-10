@@ -74,7 +74,7 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
             "discapacidad y tu objetivo.",
         ],
         "sugerencias": [
-            "Dime tu objetivo: fuerza, resistencia, movilidad o equilibrio",
+            "Dime tu objetivo: reflejos, velocidad, fuerza, agilidad… lo que quieras trabajar",
             "Puedo generar la rutina completa en POST /api/ai/rutinas/generar",
         ],
         "accion": "rutina",
@@ -493,14 +493,15 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
     },
     "objetivos": {
         "respuestas": [
-            "Empezar es más fácil de lo que parece: elige un objetivo entre fuerza, "
-            "resistencia, movilidad o equilibrio, reserva tres días fijos en la semana y "
-            "empieza con sesiones de 20 a 30 minutos. Lo importante las primeras semanas "
-            "es aprender los movimientos y no fallar días, no la intensidad.",
+            "Empezar es más fácil de lo que parece: dime qué quieres trabajar "
+            "(reflejos, velocidad, fuerza, movilidad, agilidad o lo que se te ocurra), "
+            "reserva tres días fijos en la semana y empieza con sesiones de 20 a 30 "
+            "minutos. Lo importante las primeras semanas es aprender los movimientos "
+            "y no fallar días, no la intensidad.",
             "Si nunca has entrenado, arranca con 3 sesiones semanales cortas y nivel "
-            "principiante. Dime qué te gustaría conseguir (moverte con más soltura, ganar "
-            "fuerza, aguantar más o controlar el peso) y te preparo la primera sesión "
-            "adaptada a tu perfil.",
+            "principiante. Dime qué te gustaría conseguir (reflejos, moverte con más "
+            "soltura, ganar fuerza, ir más rápido o controlar el peso) y te preparo "
+            "la primera sesión adaptada a tu perfil.",
         ],
         "adaptaciones": {
             "cognitiva": "Empezamos fácil. Elige un día y una hora fija. Haz 20 minutos. "
@@ -510,7 +511,7 @@ CONOCIMIENTO: dict[str, dict[str, Any]] = {
         },
         "sugerencias": [
             "Dime tu objetivo y te genero la primera rutina",
-            "¿Prefieres empezar por movilidad o por fuerza?",
+            "¿Quieres trabajar reflejos, velocidad o fuerza?",
         ],
         "accion": "rutina",
     },

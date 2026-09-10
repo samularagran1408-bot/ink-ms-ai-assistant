@@ -6,7 +6,7 @@ posición y nivel. Sustituye a los tres ejercicios fijos que devolvía el
 fallback anterior.
 
 Fases: calentamiento | principal | vuelta_a_la_calma
-Categorías: movilidad | fuerza | resistencia | equilibrio | core | flexibilidad
+Categorías: movilidad | fuerza | resistencia | equilibrio | core | flexibilidad | agilidad
 Discapacidades: visual | auditiva | motriz | cognitiva | intelectual | multiple
   (una lista vacía significa "apta para cualquier discapacidad")
 """
@@ -187,6 +187,12 @@ OBJETIVOS = {
     "flexibilidad": "Ganar flexibilidad",
     "rehabilitacion": "Recuperación progresiva y control del dolor",
     "peso": "Control de peso y gasto calórico",
+    "reflejos": "Estimular reflejos y tiempo de reacción",
+    "velocidad": "Mejorar velocidad de movimiento",
+    "agilidad": "Mejorar agilidad y cambios de dirección",
+    "potencia": "Desarrollar potencia explosiva",
+    "coordinacion": "Mejorar coordinación óculo-manual y segmentaria",
+    "core": "Fortalecer el tronco y la estabilidad central",
     "general": "Acondicionamiento físico general",
 }
 
@@ -255,7 +261,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "cal-03", "Marcha sentada", "resistencia", "calentamiento",
-        ["resistencia", "peso", "general"], "sentado", "principiante",
+        ["resistencia", "peso", "general", "velocidad", "agilidad"], "sentado", "principiante",
         ["cuádriceps", "flexor de cadera"], 20, 2, 60, 40, 2,
         "Eleva alternadamente las rodillas simulando una marcha, acompañando con el movimiento de brazos.",
         adaptaciones={"motriz": "Si no hay movilidad de piernas, realiza solo el braceo a mayor velocidad."},
@@ -283,7 +289,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "cal-07", "Elevaciones de talones y punteras", "equilibrio", "calentamiento",
-        ["equilibrio", "movilidad"], "de_pie", "principiante",
+        ["equilibrio", "movilidad", "reflejos"], "de_pie", "principiante",
         ["gemelos", "tibial"], 15, 2, 50, 30, 2,
         "Sujeto a un apoyo firme, sube sobre las punteras y luego apoya los talones elevando las punteras.",
         discapacidades=["visual", "auditiva", "cognitiva", "intelectual"],
@@ -296,6 +302,26 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
         ["diafragma"], 8, 2, 60, 20, 1,
         "Inhala por la nariz llevando el aire al abdomen durante 4 segundos y exhala lento en 6 segundos.",
         adaptaciones={"cognitiva": "Cuenta con los dedos cada inhalación para seguir el ritmo."},
+    ),
+    _ej(
+        "cal-09", "Toques rápidos palma-rodilla", "agilidad", "calentamiento",
+        ["reflejos", "coordinacion", "agilidad"], "sentado", "principiante",
+        ["hombros", "core", "sistema nervioso"], 20, 2, 50, 25, 2,
+        "Toca con la palma la rodilla contraria lo más rápido que puedas, alternando lados, sin perder el control del tronco.",
+        adaptaciones={
+            "motriz": "Si no hay movilidad de piernas, toca muslo, reposabrazos o mesa a distintos puntos.",
+            "visual": "Marca cada toque en voz alta: izquierda, derecha.",
+        },
+    ),
+    _ej(
+        "cal-10", "Reacción a una seña", "agilidad", "calentamiento",
+        ["reflejos", "coordinacion"], "sentado", "principiante",
+        ["hombros", "sistema nervioso"], 12, 2, 50, 25, 2,
+        "Alguien da una seña (palma, luz o toque) y tú levantas el brazo o giras el tronco lo antes posible. Doce reacciones.",
+        adaptaciones={
+            "auditiva": "Usa seña visual o vibración, nunca solo la voz.",
+            "visual": "Usa un toque en el hombro o un sonido como seña.",
+        },
     ),
 
     # ------------------------------------------------------------- principal: fuerza
@@ -382,7 +408,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "fue-11", "Propulsión de silla en recta", "fuerza", "principal",
-        ["fuerza", "resistencia"], "silla", "intermedio",
+        ["fuerza", "resistencia", "potencia", "velocidad"], "silla", "intermedio",
         ["dorsal", "tríceps", "hombros"], 15, 3, 90, 75, 4,
         "Realiza empujes largos y completos del aro de la silla en un tramo recto y despejado.",
         discapacidades=["motriz"],
@@ -403,14 +429,14 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     # -------------------------------------------------------- principal: resistencia
     _ej(
         "res-01", "Braceo continuo", "resistencia", "principal",
-        ["resistencia", "peso"], "sentado", "principiante",
+        ["resistencia", "peso", "velocidad"], "sentado", "principiante",
         ["hombros", "brazos", "sistema cardiovascular"], 1, 3, 120, 60, 3,
         "Mueve los brazos de forma continua al frente y arriba durante 2 minutos manteniendo un ritmo sostenido.",
         adaptaciones={"auditiva": "Marca el ritmo con un metrónomo visual o con luces."},
     ),
     _ej(
         "res-02", "Intervalos de propulsión", "resistencia", "principal",
-        ["resistencia", "peso"], "silla", "intermedio",
+        ["resistencia", "peso", "velocidad", "potencia"], "silla", "intermedio",
         ["hombros", "dorsal", "sistema cardiovascular"], 6, 1, 300, 90, 4,
         "Alterna 30 segundos de propulsión rápida con 60 segundos suaves, repitiendo 6 veces.",
         discapacidades=["motriz"],
@@ -439,7 +465,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "res-05", "Circuito de tres estaciones", "resistencia", "principal",
-        ["resistencia", "fuerza", "peso"], "sentado", "intermedio",
+        ["resistencia", "fuerza", "peso", "agilidad"], "sentado", "intermedio",
         ["cuerpo completo"], 3, 3, 300, 90, 4,
         "Encadena 40 segundos de braceo, 40 de marcha sentada y 40 de empuje contra la mesa; descansa y repite.",
         adaptaciones={"cognitiva": "Coloca una tarjeta con el dibujo de cada estación y ve pasándolas en orden."},
@@ -453,7 +479,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "res-07", "Baile o movimiento libre guiado", "resistencia", "principal",
-        ["resistencia", "peso", "movilidad"], "de_pie", "principiante",
+        ["resistencia", "peso", "movilidad", "coordinacion", "agilidad"], "de_pie", "principiante",
         ["cuerpo completo"], 1, 1, 300, 60, 3,
         "Cinco minutos de movimiento libre siguiendo un pulso constante, ampliando poco a poco el rango.",
         adaptaciones={
@@ -465,7 +491,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     # ---------------------------------------------------- principal: equilibrio/core
     _ej(
         "equ-01", "Sedestación activa sin apoyo", "equilibrio", "principal",
-        ["equilibrio", "rehabilitacion"], "sentado", "principiante",
+        ["equilibrio", "rehabilitacion", "core"], "sentado", "principiante",
         ["core", "espalda"], 6, 3, 60, 45, 2,
         "Siéntate sin apoyar la espalda, activa el abdomen y mantén la postura 20 segundos.",
         adaptaciones={"motriz": "Comienza con 5 segundos y un cinturón de seguridad; progresa según control."},
@@ -482,7 +508,7 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "equ-03", "Plancha frontal adaptada", "core", "principal",
-        ["fuerza", "equilibrio"], "colchoneta", "intermedio",
+        ["fuerza", "equilibrio", "core"], "colchoneta", "intermedio",
         ["core", "hombros"], 4, 3, 60, 60, 4,
         "Apoya antebrazos y rodillas manteniendo el tronco alineado; sostén 20 segundos por serie.",
         discapacidades=["visual", "auditiva", "cognitiva"],
@@ -490,21 +516,21 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
     ),
     _ej(
         "equ-04", "Antirrotación con banda", "core", "principal",
-        ["fuerza", "equilibrio", "rehabilitacion"], "sentado", "intermedio",
+        ["fuerza", "equilibrio", "rehabilitacion", "core"], "sentado", "intermedio",
         ["oblicuos", "core"], 10, 3, 60, 50, 3,
         "Con la banda anclada al lado, extiende los brazos al frente y resiste la rotación del tronco.",
         material=["banda elástica"],
     ),
     _ej(
         "equ-05", "Elevación de rodillas alterna con control", "core", "principal",
-        ["fuerza", "equilibrio"], "sentado", "principiante",
+        ["fuerza", "equilibrio", "reflejos", "coordinacion"], "sentado", "principiante",
         ["abdomen", "flexor de cadera"], 12, 3, 60, 45, 3,
         "Sin apoyar la espalda, eleva una rodilla y bájala con control antes de cambiar de lado.",
         adaptaciones={"motriz": "Si no hay control de piernas, sustituye por elevación alterna de brazos con el mismo control."},
     ),
     _ej(
         "equ-06", "Transferencia de peso lateral", "equilibrio", "principal",
-        ["equilibrio", "rehabilitacion"], "sentado", "principiante",
+        ["equilibrio", "rehabilitacion", "agilidad"], "sentado", "principiante",
         ["core", "cadera"], 10, 3, 60, 45, 2,
         "Sentado, desplaza el peso hacia un glúteo y luego al otro sin despegar los pies del suelo.",
     ),
@@ -516,6 +542,127 @@ CATALOGO_EJERCICIOS: list[dict[str, Any]] = [
         discapacidades=["auditiva", "cognitiva", "intelectual"],
         material=["cinta en el suelo"],
         seguridad="Realiza junto a una pared para poder apoyarse.",
+    ),
+    _ej(
+        "ref-01", "Toques cruzados a máxima velocidad", "agilidad", "principal",
+        ["reflejos", "coordinacion", "agilidad"], "sentado", "principiante",
+        ["hombros", "core", "sistema nervioso"], 20, 4, 50, 35, 3,
+        "Toca hombro contrario, rodilla contraria y costado en un ciclo rápido. Gana velocidad sin desarmar la postura.",
+        adaptaciones={
+            "motriz": "Fija tres puntos al alcance (hombro, reposabrazos, muslo) y recórrelos al máximo.",
+            "cognitiva": "Empieza lento nombrando cada punto y luego acelera.",
+        },
+    ),
+    _ej(
+        "ref-02", "Captura de pelota o globo", "agilidad", "principal",
+        ["reflejos", "coordinacion"], "sentado", "intermedio",
+        ["manos", "hombros", "sistema nervioso"], 16, 3, 70, 45, 3,
+        "Un compañero lanza un globo o pelota blanda a distintas alturas; tú la capturas y la devuelves de inmediato.",
+        material=["globo o pelota blanda"],
+        adaptaciones={
+            "visual": "Usa un globo con cascabel o avisa el lanzamiento en voz alta.",
+            "motriz": "Lanza contra una pared cercana y captura el rebote, o pide lanzamientos a las manos.",
+            "auditiva": "Acuerda una seña visual justo antes de cada lanzamiento.",
+        },
+        seguridad="Pelota blanda o globo; nunca objetos duros cerca de la cara.",
+    ),
+    _ej(
+        "ref-03", "Toque de objetivos en el espacio", "agilidad", "principal",
+        ["reflejos", "agilidad", "velocidad"], "sentado", "intermedio",
+        ["hombros", "tronco", "sistema nervioso"], 20, 3, 60, 40, 3,
+        "Marca 4 puntos (arriba, abajo, izquierda, derecha). Alguien nombra o señala uno y tú lo tocas lo antes posible.",
+        adaptaciones={
+            "visual": "Nombra el punto en voz alta en lugar de señalarlo.",
+            "auditiva": "Señala el punto con la mano o con un color, sin voz.",
+        },
+    ),
+    _ej(
+        "ref-04", "Freno y arranque en silla", "agilidad", "principal",
+        ["reflejos", "agilidad", "velocidad"], "silla", "intermedio",
+        ["hombros", "dorsal", "sistema nervioso"], 8, 3, 80, 50, 4,
+        "A una seña, impulsa dos metros y frena en seco. Espera la siguiente seña. Ocho repeticiones.",
+        discapacidades=["motriz"],
+        material=["silla de ruedas", "espacio despejado"],
+        seguridad="Zona libre de obstáculos; frena con técnica, no con el hombro bloqueado.",
+    ),
+    _ej(
+        "vel-01", "Braceo explosivo por intervalos", "resistencia", "principal",
+        ["velocidad", "potencia", "resistencia"], "sentado", "intermedio",
+        ["hombros", "brazos", "sistema cardiovascular"], 8, 3, 80, 50, 4,
+        "20 segundos de braceo a máxima velocidad y 20 de braceo suave. Repite el ciclo.",
+        adaptaciones={"motriz": "Reduce el rango si el hombro carga; la velocidad manda sobre la amplitud."},
+        seguridad="Si aparece pinzamiento, baja la velocidad y el rango.",
+    ),
+    _ej(
+        "vel-02", "Elevación rápida de rodillas", "agilidad", "principal",
+        ["velocidad", "agilidad", "resistencia"], "sentado", "principiante",
+        ["flexor de cadera", "core"], 20, 3, 50, 40, 3,
+        "Eleva las rodillas lo más rápido que puedas durante 20 repeticiones, manteniendo el tronco estable.",
+        adaptaciones={
+            "motriz": "Si no hay movilidad de piernas, alterna elevaciones explosivas de brazos o de un lado del tronco.",
+        },
+    ),
+    _ej(
+        "agi-01", "Cambios de peso laterales rápidos", "agilidad", "principal",
+        ["agilidad", "equilibrio", "reflejos"], "sentado", "principiante",
+        ["core", "cadera"], 16, 3, 50, 35, 3,
+        "Pasa el peso de un glúteo al otro a un ritmo vivo, como si esquivaras un toque, sin despegarte del asiento.",
+        adaptaciones={"motriz": "Frena la silla. Si el control es bajo, reduce el rango y aumenta el número de toques."},
+    ),
+    _ej(
+        "agi-02", "Zigzag corto en silla", "agilidad", "principal",
+        ["agilidad", "velocidad", "potencia"], "silla", "intermedio",
+        ["hombros", "oblicuos"], 6, 3, 90, 60, 4,
+        "Recorre un pasillo haciendo tres cambios de dirección suaves a cada lado y vuelve.",
+        discapacidades=["motriz"],
+        material=["silla de ruedas", "espacio despejado"],
+        seguridad="Giros amplios, no giros secos que carguen el hombro.",
+    ),
+    _ej(
+        "agi-03", "Pasos laterales cortos con apoyo", "agilidad", "principal",
+        ["agilidad", "equilibrio", "velocidad"], "de_pie", "intermedio",
+        ["glúteo", "piernas"], 12, 3, 60, 45, 3,
+        "Con una mano en la pared, da cuatro pasos laterales a un lado y cuatro al otro, rápidos y controlados.",
+        discapacidades=["visual", "auditiva", "cognitiva", "intelectual"],
+        material=["pared o barra de apoyo"],
+        seguridad="Nunca sueltes el apoyo si el equilibrio falla.",
+    ),
+    _ej(
+        "coo-01", "Coordinación mano-ojo con objeto", "agilidad", "principal",
+        ["coordinacion", "reflejos"], "sentado", "principiante",
+        ["manos", "hombros"], 20, 3, 60, 35, 2,
+        "Pasa un objeto ligero de una mano a la otra a distintas alturas, luego acelera el ritmo.",
+        material=["pelota blanda, calcetín o botella vacía"],
+        adaptaciones={
+            "visual": "Usa un objeto con textura marcada y nombra izquierda/derecha en cada pase.",
+            "cognitiva": "Empieza a un ritmo de un segundo por pase y solo acelera si no se cae.",
+        },
+    ),
+    _ej(
+        "pot-01", "Empuje explosivo contra mesa", "fuerza", "principal",
+        ["potencia", "fuerza", "velocidad"], "sentado", "intermedio",
+        ["pectoral", "tríceps", "hombros"], 8, 4, 50, 50, 4,
+        "Manos en el borde de una mesa firme: empuja con un impulso rápido y vuelve lento. Ocho repeticiones.",
+        material=["mesa estable"],
+        adaptaciones={"motriz": "Frena la silla. Empuja solo el rango libre de dolor."},
+        seguridad="La mesa no debe desplazarse; comprueba que esté anclada o contra la pared.",
+    ),
+    _ej(
+        "pot-02", "Propulsión explosiva corta", "fuerza", "principal",
+        ["potencia", "velocidad", "fuerza"], "silla", "avanzado",
+        ["dorsal", "tríceps", "hombros"], 6, 4, 70, 70, 5,
+        "Seis empujes máximos en 8-10 metros, caminando de vuelta. Prioriza la explosión, no la distancia.",
+        discapacidades=["motriz"],
+        material=["silla de ruedas", "espacio despejado"],
+        seguridad="Descansa el hombro entre series; para si hay pinchazo.",
+    ),
+    _ej(
+        "cor-01", "Estabilidad de tronco con seña", "core", "principal",
+        ["core", "equilibrio", "reflejos"], "sentado", "principiante",
+        ["core", "oblicuos"], 10, 3, 50, 40, 2,
+        "Sin apoyar la espalda, resiste un toque suave en un hombro y luego en el otro sin perder la postura.",
+        adaptaciones={"motriz": "Empieza con toques muy suaves y el cinturón abrochado."},
+        seguridad="Alguien cerca si retiras el respaldo.",
     ),
 
     # ---------------------------------------------------- vuelta a la calma

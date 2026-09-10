@@ -80,8 +80,10 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "plan de entrenamiento personalizado",
     )),
     ("rutina_objetivo", (
-        "genera una rutina", "rutina de fuerza", "rutina de resistencia",
-        "quiero una rutina de",
+        "genera una rutina", "quiero una rutina de", "dame una rutina",
+        "rutina de fuerza", "rutina de resistencia", "rutina de reflejos",
+        "rutina de velocidad", "rutina de agilidad", "rutina de coordinacion",
+        "rutina de potencia", "rutina de equilibrio", "rutina de movilidad",
     )),
     ("rutina_adaptada", (
         "rutina adaptada", "ejercicios adaptados", "modificaciones de ejercicios",
