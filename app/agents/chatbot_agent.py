@@ -700,7 +700,6 @@ class ChatbotAgent:
             for ronda in range(max_rondas):
                 resultado_llm = await self.llm.completar(
                     mensajes,
-                    temperatura=0.4,
                     tools=tools_openai,
                     tool_choice="auto",
                 )
@@ -834,7 +833,6 @@ class ChatbotAgent:
                         ),
                     },
                 ],
-                temperatura=0.5,
             )
             if not cierre:
                 return None
@@ -1178,7 +1176,6 @@ class ChatbotAgent:
                     ),
                 },
             ],
-            temperatura=0.5,
         )
 
     # ---------------------------------------------------------------- redacción
@@ -1312,9 +1309,7 @@ class ChatbotAgent:
                 ),
             },
         ]
-        texto = await self.llm.texto_mensajes(
-            mensajes, temperatura=0.4, ignorar_pausa=True
-        )
+        texto = await self.llm.texto_mensajes(mensajes, ignorar_pausa=True)
         if not texto:
             return None
         return {
@@ -1423,7 +1418,7 @@ class ChatbotAgent:
                 ),
             },
         ]
-        pulido = await self.llm.texto_mensajes(mensajes, temperatura=0.65)
+        pulido = await self.llm.texto_mensajes(mensajes)
         if not pulido:
             resultado = dict(resultado)
             resultado["sintesis_llm"] = False

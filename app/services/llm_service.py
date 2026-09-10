@@ -368,7 +368,7 @@ class LLMService:
         prompt: str,
         disability_type: str = "general",
         sistema_extra: str = "",
-        temperatura: float = 0.7,
+        temperatura: Optional[float] = None,
     ) -> str:
         """Consulta al proveedor. Lanza excepción si no está disponible o falla."""
         return await self.chat_mensajes(
@@ -393,6 +393,13 @@ class LLMService:
                 continue
             orden.append(modelo)
         return orden
+
+    @staticmethod
+    def _temperatura(valor: Optional[float]) -> float:
+        """Usa ``LLM_TEMPERATURE`` (~0.2) si el llamador no fija otra."""
+        if valor is None:
+            return settings.LLM_TEMPERATURE
+        return max(0.0, min(2.0, float(valor)))
 
     def _validar_listo(self, *, ignorar_pausa: bool = False) -> None:
         """Lanza RuntimeError si el LLM está deshabilitado, mal configurado o en pausa."""
@@ -461,7 +468,7 @@ class LLMService:
         self,
         mensajes: list[dict[str, Any]],
         *,
-        temperatura: float = 0.7,
+        temperatura: Optional[float] = None,
         max_tokens: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
@@ -496,7 +503,7 @@ class LLMService:
                 usar_tools,
                 tools,
                 tool_choice,
-                temperatura,
+                self._temperatura(temperatura),
                 max_tokens,
             )
         finally:
@@ -691,7 +698,7 @@ class LLMService:
     async def chat_mensajes(
         self,
         mensajes: list[dict[str, Any]],
-        temperatura: float = 0.7,
+        temperatura: Optional[float] = None,
         max_tokens: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = None,
@@ -729,7 +736,7 @@ class LLMService:
         prompt: str,
         disability_type: str = "general",
         sistema_extra: str = "",
-        temperatura: float = 0.7,
+        temperatura: Optional[float] = None,
     ) -> Optional[str]:
         """Como `chat` pero devuelve None en vez de lanzar excepción."""
         if not self.disponible:
@@ -744,7 +751,7 @@ class LLMService:
     async def texto_mensajes(
         self,
         mensajes: list[dict[str, Any]],
-        temperatura: float = 0.7,
+        temperatura: Optional[float] = None,
         max_tokens: Optional[int] = None,
         ignorar_pausa: bool = False,
     ) -> Optional[str]:
@@ -770,7 +777,7 @@ class LLMService:
         self, prompt: str, disability_type: str = "general", sistema_extra: str = ""
     ) -> Optional[dict[str, Any]]:
         """Pide una respuesta JSON y la devuelve como dict, o None si falla."""
-        crudo = await self.texto(prompt, disability_type, sistema_extra, temperatura=0.3)
+        crudo = await self.texto(prompt, disability_type, sistema_extra)
         if not crudo:
             return None
         bloque = re.search(r"\{.*\}", crudo, re.DOTALL)
@@ -831,6 +838,8 @@ class LLMService:
             "clave_configurada": bool(instancia.api_key),
             "url": instancia.api_url or None,
             "modelo": instancia.model or None,
+            "temperatura": settings.LLM_TEMPERATURE,
+            "timeout_segundos": instancia.timeout,
             "configurado": instancia.is_configured,
             "contactado": contactado,
             "disponible": operativo,

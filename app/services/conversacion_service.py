@@ -81,6 +81,7 @@ class ConversacionService:
         self.turnos_llm = settings.CHAT_HISTORIAL_LLM_TURNOS
         self.max_chars_msg = settings.CHAT_MAX_CHARS_MENSAJE
         self.max_chars_respuesta = settings.CHAT_MAX_CHARS_RESPUESTA
+        self.max_chars_llm = settings.CHAT_HISTORIAL_LLM_CHARS
         self.max_chars_resumen = settings.CHAT_RESUMEN_MAX_CHARS
 
     # ---------------------------------------------------------------- lectura LLM
@@ -106,7 +107,8 @@ class ConversacionService:
         historial: list[dict[str, str]] = []
         for m in recientes:
             es_asistente = m.get("remitente") == REMITENTE_ASISTENTE
-            tope = self.max_chars_respuesta if es_asistente else self.max_chars_msg
+            persistido = self.max_chars_respuesta if es_asistente else self.max_chars_msg
+            tope = min(self.max_chars_llm, persistido)
             texto = _recortar(str(m.get("mensaje") or ""), tope)
             if not texto:
                 continue

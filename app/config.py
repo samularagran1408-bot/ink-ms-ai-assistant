@@ -27,6 +27,14 @@ def _int(nombre: str, defecto: int) -> int:
         return defecto
 
 
+def _float(nombre: str, defecto: float) -> float:
+    """Lee una variable de entorno como float; si no es un número válido, usa `defecto`."""
+    try:
+        return float(os.getenv(nombre, "").strip() or defecto)
+    except ValueError:
+        return defecto
+
+
 def _primero(*nombres: str, defecto: str = "") -> str:
     """Devuelve el primer valor de entorno no vacío entre `nombres`, o `defecto`."""
     for nombre in nombres:
@@ -84,11 +92,12 @@ class Settings:
     LLM_MODEL = _primero("LLM_MODEL", "GROK_MODEL", defecto="")
     LLM_API_URL = _primero("LLM_API_URL", "GROK_API_URL", defecto="")
 
-    # La inferencia local en CPU es lenta la primera vez (carga del modelo en RAM),
-    # así que el timeout por defecto es holgado.
-    LLM_TIMEOUT = _int("LLM_TIMEOUT", 120)
+    # Timeout corto: si el proveedor no responde a tiempo, el chat sigue con motor local.
+    LLM_TIMEOUT = _int("LLM_TIMEOUT", 30)
     # 800 cortaba listas de eventos a mitad de palabra (finish_reason=length).
     LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 2048)
+    # Baja (~0.2): respuestas más deterministas; el historial corto recorta el contexto.
+    LLM_TEMPERATURE = max(0.0, min(2.0, _float("LLM_TEMPERATURE", 0.2)))
 
     # Kickoff CrewAI: varias iteraciones de LLM + tools. El front debe esperar esto.
     CREW_TIMEOUT_SEGUNDOS = _int("CREW_TIMEOUT_SEGUNDOS", 180)
@@ -109,12 +118,13 @@ class Settings:
     # Reintentos extra del mismo modelo ante timeout/429/5xx, luego el siguiente.
     LLM_REINTENTOS_POR_MODELO = _int("LLM_REINTENTOS_POR_MODELO", 1)
     # Si el modelo corta por max_tokens, pide continuación (evita "Polideport…").
-    LLM_CONTINUACIONES_TRUNCADO = _int("LLM_CONTINUACIONES_TRUNCADO", 2)
+    # Una sola basta: cada extra es otra ronda HTTP.
+    LLM_CONTINUACIONES_TRUNCADO = _int("LLM_CONTINUACIONES_TRUNCADO", 1)
 
     # Cuántas llamadas al LLM pueden ir a la vez en este proceso. El resto espera
     # LLM_QUEUE_WAIT_SEGUNDOS y, si no hay hueco, el chat sigue con motor local.
     LLM_MAX_CONCURRENT = _int("LLM_MAX_CONCURRENT", 2)
-    LLM_QUEUE_WAIT_SEGUNDOS = _int("LLM_QUEUE_WAIT_SEGUNDOS", 20)
+    LLM_QUEUE_WAIT_SEGUNDOS = _int("LLM_QUEUE_WAIT_SEGUNDOS", 8)
 
     # Un mismo usuario no puede tener más de N turnos de chat en vuelo (429).
     CHAT_MAX_INFLIGHT_PER_USER = _int("CHAT_MAX_INFLIGHT_PER_USER", 1)
@@ -131,12 +141,15 @@ class Settings:
     # Historial de chat: anti-basura en Mongo y en el prompt del LLM
     CHAT_MAX_MENSAJES_POR_CONVERSACION = _int("CHAT_MAX_MENSAJES_POR_CONVERSACION", 40)
     CHAT_MAX_CONVERSACIONES_POR_USUARIO = _int("CHAT_MAX_CONVERSACIONES_POR_USUARIO", 10)
-    CHAT_HISTORIAL_LLM_TURNOS = _int("CHAT_HISTORIAL_LLM_TURNOS", 6)
+    # Ventana corta: menos tokens de entrada = respuesta más rápida.
+    CHAT_HISTORIAL_LLM_TURNOS = _int("CHAT_HISTORIAL_LLM_TURNOS", 3)
+    # Tope por mensaje en el prompt (el historial persistido sigue en CHAT_MAX_CHARS_*).
+    CHAT_HISTORIAL_LLM_CHARS = _int("CHAT_HISTORIAL_LLM_CHARS", 700)
     CHAT_MAX_CHARS_MENSAJE = _int("CHAT_MAX_CHARS_MENSAJE", 2000)
     # La respuesta del asistente no debe recortarse al persistir (2000 chars
     # dejaba el historial a medias aunque el turno en vivo llegara entero).
     CHAT_MAX_CHARS_RESPUESTA = _int("CHAT_MAX_CHARS_RESPUESTA", 12000)
-    CHAT_RESUMEN_MAX_CHARS = _int("CHAT_RESUMEN_MAX_CHARS", 800)
+    CHAT_RESUMEN_MAX_CHARS = _int("CHAT_RESUMEN_MAX_CHARS", 400)
 
     # Retención de datos efímeros (no toca catálogos ni modo competencia)
     RETENCION_CHAT_HORAS = _int("RETENCION_CHAT_HORAS", 720)
