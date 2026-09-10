@@ -7,9 +7,9 @@ LLM_PROVIDER o se deduce del prefijo de LLM_API_KEY.
 El servicio completo funciona sin LLM: los agentes usan su motor local y, cuando
 el proveedor responde, lo aprovechan para redactar respuestas más ricas.
 
-Incluye un cortacircuitos compartido: si el proveedor falla, se deja de
-intentar durante `LLM_COOLDOWN_SEGUNDOS`, de modo que un proveedor inaccesible
-no añade latencia a cada petición.
+Incluye un cortacircuitos compartido: un fallo duro (401/403/sin créditos)
+pausa las llamadas `LLM_COOLDOWN_SEGUNDOS`. Timeouts y 429 reintentan el
+mismo modelo y luego el siguiente, sin apagar el chat para todos.
 """
 
 import asyncio
@@ -31,11 +31,18 @@ class ChatCompletionResult:
     content: Optional[str] = None
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     modelo_usado: Optional[str] = None
+    finish_reason: Optional[str] = None
 
     @property
     def tiene_tools(self) -> bool:
         """True si el modelo pidió una o más llamadas a herramientas."""
         return bool(self.tool_calls)
+
+    @property
+    def truncado(self) -> bool:
+        """True si el proveedor cortó por límite de tokens."""
+        reason = (self.finish_reason or "").lower()
+        return reason in {"length", "max_tokens"}
 
 
 CONTEXTO_DISCAPACIDAD = {
@@ -219,6 +226,49 @@ def _es_tools_no_soportado(status: int, cuerpo: str) -> bool:
     )
 
 
+def _es_fallo_duro(status: int, cuerpo: str) -> bool:
+    """Clave inválida o cuenta sin créditos: no tiene sentido probar otro :free."""
+    if status in {401, 403}:
+        return True
+    if status == 402:
+        return not _es_cuota_free_diaria(status, cuerpo)
+    bajo = (cuerpo or "").lower()
+    return "invalid api key" in bajo or "incorrect api key" in bajo
+
+
+def _es_error_red(exc: BaseException) -> bool:
+    """Timeouts y cortes de red: conviene reintentar u otro modelo."""
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    nombre = type(exc).__name__.lower()
+    return any(t in nombre for t in ("timeout", "connect", "network", "read"))
+
+
+def _unir_continuacion(base: str, extra: str) -> str:
+    """Pega un trozo cortado por max_tokens con su continuación, sin duplicar."""
+    a = (base or "").rstrip()
+    b = (extra or "").lstrip()
+    if not b:
+        return a
+    if not a:
+        return b
+    tope = min(len(a), len(b), 120)
+    for n in range(tope, 7, -1):
+        if a.endswith(b[:n]):
+            return a + b[n:]
+    if a[-1].isalnum() and b[0].islower():
+        return a + b
+    if a[-1] in " \n" or b[0] in " \n.,;:!?)":
+        return a + b
+    return f"{a} {b}"
+
+
+async def _esperar_reintento(intento: int) -> None:
+    """Backoff corto (0.4s, 0.8s, … tope 2s) para no inflar la espera del usuario."""
+    espera = min(2.0, 0.4 * (2 ** max(0, intento)))
+    await asyncio.sleep(espera)
+
+
 class LLMService:
     """Cliente de chat/completions (OpenAI-compatible) con cortacircuitos y fallbacks."""
 
@@ -294,11 +344,16 @@ class LLMService:
         return self.is_configured and time.monotonic() >= LLMService._bloqueado_hasta
 
     @classmethod
-    def _registrar_fallo(cls, error: str) -> None:
-        """Anota el error y activa el cooldown global para no reintentar enseguida."""
+    def _registrar_fallo(cls, error: str, *, transitorio: bool = False) -> None:
+        """Anota el error. El cooldown largo solo aplica a fallos duros."""
         cls._ultimo_error = error[:300]
         cls._llamadas_fallidas += 1
-        cls._bloqueado_hasta = time.monotonic() + settings.LLM_COOLDOWN_SEGUNDOS
+        espera = (
+            settings.LLM_COOLDOWN_TRANSITORIO_SEGUNDOS
+            if transitorio
+            else settings.LLM_COOLDOWN_SEGUNDOS
+        )
+        cls._bloqueado_hasta = time.monotonic() + max(0, espera)
 
     @classmethod
     def _registrar_exito(cls) -> None:
@@ -387,6 +442,21 @@ class LLMService:
             )
         return ChatCompletionResult(content=contenido, tool_calls=tool_calls)
 
+    @staticmethod
+    def _parsear_choice(cuerpo: dict[str, Any]) -> ChatCompletionResult:
+        """Lee ``choices[0]`` (texto, tools y finish_reason)."""
+        choices = cuerpo.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            raise ValueError("respuesta sin choices")
+        choice = choices[0]
+        mensaje = choice.get("message") or {}
+        if not isinstance(mensaje, dict):
+            mensaje = {}
+        resultado = LLMService._parsear_mensaje(mensaje)
+        reason = choice.get("finish_reason") or choice.get("native_finish_reason")
+        resultado.finish_reason = str(reason) if reason else None
+        return resultado
+
     async def completar(
         self,
         mensajes: list[dict[str, Any]],
@@ -400,8 +470,10 @@ class LLMService:
         """Llama al proveedor (POST a la URL de /v1/chat/completions) y devuelve texto y/o tool_calls.
 
         Prueba el modelo configurado y, en OpenRouter, fallbacks si hay rate-limit
-        o el modelo no existe. El llamador recibe un ``ChatCompletionResult``; si
-        el proveedor falla, se activa el cortacircuitos y se lanza ``RuntimeError``.
+        o el modelo no existe. Reintenta timeouts/429 en el mismo modelo. Si el
+        texto llega cortado (``finish_reason=length``), pide continuación.
+        El llamador recibe un ``ChatCompletionResult``; si todos los modelos
+        fallan, se activa el cortacircuitos y se lanza ``RuntimeError``.
         """
         self._validar_listo(ignorar_pausa=ignorar_pausa)
         headers = self._headers()
@@ -444,68 +516,177 @@ class LLMService:
     ) -> ChatCompletionResult:
         """POST al proveedor. El llamador ya tiene el cupo del semáforo."""
         ultimo_error = ""
+        transitorio = True
+        tokens = max_tokens or settings.LLM_MAX_TOKENS
+        reintentos = max(0, settings.LLM_REINTENTOS_POR_MODELO)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for i, modelo in enumerate(modelos):
                 if _es_modelo_free(modelo) and time.time() < LLMService._free_cuota_hasta:
                     continue
+                hay_mas = any(
+                    m != modelo
+                    and not (
+                        _es_modelo_free(m) and time.time() < LLMService._free_cuota_hasta
+                    )
+                    for m in modelos[i + 1 :]
+                )
                 payload: dict[str, Any] = {
                     "messages": mensajes,
                     "model": modelo,
                     "temperature": temperatura,
-                    "max_tokens": max_tokens or settings.LLM_MAX_TOKENS,
+                    "max_tokens": tokens,
                 }
                 if usar_tools:
                     payload["tools"] = tools
                     payload["tool_choice"] = tool_choice or "auto"
 
-                try:
-                    respuesta = await client.post(
-                        self.api_url, headers=headers, json=payload
-                    )
-                except Exception as exc:
-                    self._registrar_fallo(f"{type(exc).__name__}: {exc}")
-                    raise RuntimeError(f"LLM inaccesible: {exc}") from exc
-
-                if respuesta.status_code < 400:
+                for intento in range(reintentos + 1):
                     try:
-                        mensaje = respuesta.json()["choices"][0]["message"]
-                        resultado = self._parsear_mensaje(mensaje)
+                        respuesta = await client.post(
+                            self.api_url, headers=headers, json=payload
+                        )
                     except Exception as exc:
-                        self._registrar_fallo(f"Respuesta inesperada: {exc}")
-                        raise RuntimeError(
-                            f"Respuesta del LLM no interpretable: {exc}"
-                        ) from exc
-                    resultado.modelo_usado = modelo
-                    self._registrar_exito()
-                    if modelo != self.model:
-                        print(f"LLM: {self.model} falló; respondió {modelo}")
-                    return resultado
+                        ultimo_error = f"{type(exc).__name__}: {exc}"
+                        transitorio = True
+                        if _es_error_red(exc) and intento < reintentos:
+                            print(
+                                f"LLM {modelo} {ultimo_error[:80]}; "
+                                f"reintento {intento + 1}/{reintentos}..."
+                            )
+                            await _esperar_reintento(intento)
+                            continue
+                        if _es_error_red(exc) and hay_mas:
+                            print(
+                                f"LLM {modelo} {ultimo_error[:80]}; "
+                                "probando alternativa..."
+                            )
+                            break
+                        self._registrar_fallo(ultimo_error, transitorio=True)
+                        raise RuntimeError(f"LLM inaccesible: {exc}") from exc
 
-                detalle = respuesta.text[:800]
-                ultimo_error = f"HTTP {respuesta.status_code}: {detalle[:300]}"
-                if usar_tools and _es_tools_no_soportado(respuesta.status_code, detalle):
-                    raise RuntimeError(f"LLM sin soporte de tools: {ultimo_error}")
-                if _es_cuota_free_diaria(respuesta.status_code, detalle):
-                    espera = _segundos_hasta_reset_cuota(detalle)
-                    LLMService._free_cuota_hasta = time.time() + espera
-                    print(
-                        f"LLM cuota :free agotada ~{espera}s; "
-                        "sigo con modelo de pago barato si hay..."
-                    )
-                    if i < len(modelos) - 1:
+                    if respuesta.status_code < 400:
+                        try:
+                            resultado = self._parsear_choice(respuesta.json())
+                        except Exception as exc:
+                            ultimo_error = f"Respuesta inesperada: {exc}"
+                            transitorio = True
+                            if hay_mas:
+                                print(f"LLM {modelo} {ultimo_error[:80]}; alternativa...")
+                                break
+                            self._registrar_fallo(ultimo_error, transitorio=True)
+                            raise RuntimeError(
+                                f"Respuesta del LLM no interpretable: {exc}"
+                            ) from exc
+                        if not (resultado.content or "").strip() and not resultado.tiene_tools:
+                            ultimo_error = f"{modelo}: respuesta vacía"
+                            if intento < reintentos:
+                                await _esperar_reintento(intento)
+                                continue
+                            if hay_mas:
+                                print(f"LLM {ultimo_error}; probando alternativa...")
+                                break
+                            self._registrar_fallo(ultimo_error, transitorio=True)
+                            raise RuntimeError(f"LLM {ultimo_error}")
+                        if resultado.truncado and not resultado.tiene_tools:
+                            resultado = await self._continuar_si_truncado(
+                                client, headers, payload, resultado
+                            )
+                        resultado.modelo_usado = modelo
+                        self._registrar_exito()
+                        if modelo != self.model:
+                            print(f"LLM: {self.model} falló; respondió {modelo}")
+                        return resultado
+
+                    detalle = respuesta.text[:800]
+                    ultimo_error = f"HTTP {respuesta.status_code}: {detalle[:300]}"
+                    if usar_tools and _es_tools_no_soportado(
+                        respuesta.status_code, detalle
+                    ):
+                        raise RuntimeError(f"LLM sin soporte de tools: {ultimo_error}")
+                    if _es_cuota_free_diaria(respuesta.status_code, detalle):
+                        espera = _segundos_hasta_reset_cuota(detalle)
+                        LLMService._free_cuota_hasta = time.time() + espera
+                        transitorio = True
+                        print(
+                            f"LLM cuota :free agotada ~{espera}s; "
+                            "sigo con modelo de pago barato si hay..."
+                        )
+                        break
+                    if _es_fallo_duro(respuesta.status_code, detalle):
+                        transitorio = False
+                        self._registrar_fallo(ultimo_error, transitorio=False)
+                        raise RuntimeError(f"LLM {ultimo_error}")
+                    if (
+                        _es_modelo_reintentable(respuesta.status_code, detalle)
+                        and intento < reintentos
+                    ):
+                        print(
+                            f"LLM {modelo} {ultimo_error[:80]}; "
+                            f"reintento {intento + 1}/{reintentos}..."
+                        )
+                        await _esperar_reintento(intento)
                         continue
-                elif (
-                    respuesta.status_code not in {401, 403, 402}
-                    and _es_modelo_reintentable(respuesta.status_code, detalle)
-                    and i < len(modelos) - 1
-                ):
-                    print(f"LLM {modelo} {ultimo_error[:80]}; probando alternativa...")
-                    continue
-                self._registrar_fallo(ultimo_error)
-                raise RuntimeError(f"LLM {ultimo_error}")
+                    if (
+                        _es_modelo_reintentable(respuesta.status_code, detalle)
+                        and hay_mas
+                    ):
+                        print(f"LLM {modelo} {ultimo_error[:80]}; probando alternativa...")
+                        break
+                    self._registrar_fallo(ultimo_error, transitorio=transitorio)
+                    raise RuntimeError(f"LLM {ultimo_error}")
 
-        self._registrar_fallo(ultimo_error or "sin modelos")
+        self._registrar_fallo(ultimo_error or "sin modelos", transitorio=transitorio)
         raise RuntimeError(f"LLM {ultimo_error or 'sin respuesta'}")
+
+    async def _continuar_si_truncado(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        resultado: ChatCompletionResult,
+    ) -> ChatCompletionResult:
+        """Si el modelo cortó por tokens, pide el resto y lo pega."""
+        max_cont = max(0, settings.LLM_CONTINUACIONES_TRUNCADO)
+        acumulado = (resultado.content or "").rstrip()
+        mensajes_base = list(payload.get("messages") or [])
+        usados = 0
+        while resultado.truncado and usados < max_cont and acumulado:
+            usados += 1
+            cont_payload = dict(payload)
+            cont_payload["messages"] = mensajes_base + [
+                {"role": "assistant", "content": acumulado},
+                {
+                    "role": "user",
+                    "content": (
+                        "Continúa exactamente desde el carácter donde te quedaste. "
+                        "No repitas lo ya escrito. Termina las frases."
+                    ),
+                },
+            ]
+            try:
+                resp = await client.post(
+                    self.api_url, headers=headers, json=cont_payload
+                )
+            except Exception as exc:
+                print(f"LLM continuación falló: {type(exc).__name__}: {exc}")
+                break
+            if resp.status_code >= 400:
+                print(f"LLM continuación HTTP {resp.status_code}")
+                break
+            try:
+                extra = self._parsear_choice(resp.json())
+            except Exception as exc:
+                print(f"LLM continuación ilegible: {exc}")
+                break
+            if not (extra.content or "").strip():
+                break
+            acumulado = _unir_continuacion(acumulado, extra.content or "")
+            resultado.content = acumulado
+            resultado.finish_reason = extra.finish_reason
+            reason = (extra.finish_reason or "").lower()
+            if reason not in {"length", "max_tokens"}:
+                break
+        return resultado
 
     async def chat_mensajes(
         self,

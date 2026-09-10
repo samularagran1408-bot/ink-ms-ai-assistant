@@ -144,6 +144,8 @@ _DEFINICIONES = [
             "que eventos hay", "eventos disponibles", "proximos eventos",
             "recomiendame eventos", "eventos cerca", "hay competencias",
             "calendario de eventos", "eventos para mi",
+            "el proximo evento", "proximo evento", "evento mas reciente",
+            "mas reciente en iniciar", "proximo a iniciar",
         ),
         palabras=("evento", "eventos", "competencia", "competencias", "torneo", "torneos", "calendario"),
         prioridad=1.2,

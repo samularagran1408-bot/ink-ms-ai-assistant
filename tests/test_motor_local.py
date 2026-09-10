@@ -33,6 +33,8 @@ def test_intenciones_reconocen_frases_naturales():
         "me duele el hombro al entrenar": "lesiones",
         "cuantas veces por semana debo entrenar": "frecuencia",
         "¿Qué eventos hay disponibles?": "eventos",
+        "Evento más reciente en iniciar": "eventos",
+        "cuál es el próximo evento": "eventos",
         "¿cómo me inscribo a un evento?": "inscripcion",
         "quiero ser entrenador verificado": "verificacion_entrenador",
         "¿qué deportes puedo practicar?": "deportes",

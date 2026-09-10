@@ -39,6 +39,13 @@ from app.nlp.admin_pedido import (
     pide_inactivos,
     pide_pdf_auditoria,
 )
+from app.nlp.eventos_pedido import (
+    bloque_hechos_eventos,
+    criterio_ranking_evento,
+    evento_mas_inscritos,
+    linea_evento,
+    proximo_a_iniciar,
+)
 from app.nlp.inscripcion_pedido import coincidencias_inscripcion, extraer_nombre_evento
 from app.nlp.entrenamiento_pedido import (
     detectar_comando_entrenamiento,
@@ -1215,7 +1222,9 @@ class ChatbotAgent:
                 accion, usuario_id, discapacidad, authorization, mensaje,
                 roles=roles or [], perfil=perfil,
             )
-            if complemento:
+            if complemento and datos.get("reemplaza_respuesta"):
+                texto = complemento
+            elif complemento:
                 texto = f"{texto}\n\n{complemento}".strip()
         if not texto:
             texto = self._rotar(usuario_id, intencion, [])
@@ -1266,12 +1275,17 @@ class ChatbotAgent:
                 "content": system_prompt(
                     discapacidad,
                     "Eres un asistente de IA conversacional. Responde SIEMPRE la pregunta "
-                    "del usuario con naturalidad, aunque sea cotidiana, cultural, de salud "
-                    "general o no tenga herramienta. Si preguntan un dato general (capitales, "
-                    "ciencia, vida diaria), contéstalo directo y bien. InkluSport es el "
-                    "contexto, no un muro: no digas que no entendiste ni redirijas al menú "
-                    "de rutinas/eventos/quiz salvo al final y solo si encaja. "
-                    "Sé empático y varía el estilo; no suenes a plantilla.",
+                    "literal del usuario: el primer párrafo debe contestar exactamente lo "
+                    "que pidió, no otra métrica parecida. Aunque sea cotidiana, cultural, "
+                    "de salud general o no tenga herramienta. Si preguntan un dato general "
+                    "(capitales, ciencia, vida diaria), contéstalo directo y bien. "
+                    "InkluSport es el contexto, no un muro: no digas que no entendiste ni "
+                    "redirijas al menú de rutinas/eventos/quiz salvo al final y solo si "
+                    "encaja. Sé empático y varía el estilo; no suenes a plantilla. "
+                    "Si el contexto trae 'Próximo a iniciar' y preguntan el más reciente, "
+                    "el próximo, el que inicia o el más cercano en fecha, usa esa línea. "
+                    "No sustituyas por el evento con más inscritos ni por el que suene "
+                    "más importante.",
                 ),
             },
             *historial,
@@ -1289,13 +1303,17 @@ class ChatbotAgent:
                     "No pidas email ni ID. No inventes eventos, deportes ni cupos: "
                     "solo los del contexto. Si preguntan estadísticas de inscritos "
                     "o aforo, usa los números de cada evento. "
+                    "Si preguntan el evento más reciente / próximo / que inicia, "
+                    "usa la línea 'Próximo a iniciar' (criterio fecha). El de más "
+                    "inscritos solo si preguntan popularidad o inscripciones. "
                     "Contesta primero lo que te preguntaron. Si falta un dato de la "
-                    "plataforma, dilo con naturalidad y sigue siendo útil."
+                    "plataforma, dilo con naturalidad y sigue siendo útil. "
+                    "Termina siempre la respuesta: no dejes palabras ni frases a medias."
                 ),
             },
         ]
         texto = await self.llm.texto_mensajes(
-            mensajes, temperatura=0.75, ignorar_pausa=True
+            mensajes, temperatura=0.4, ignorar_pausa=True
         )
         if not texto:
             return None
@@ -1445,37 +1463,7 @@ class ChatbotAgent:
             nombres = ", ".join(str(d.get("name")) for d in discapacidades[:10])
             lineas.append(f"- Discapacidades contempladas: {nombres}")
         if eventos:
-            lineas.append(f"- Eventos publicados: {len(eventos)}")
-            ranking = []
-            for evento in eventos[:8]:
-                maximo = evento.get("maxCapacity") or evento.get("max_capacity")
-                quedan = evento.get("availableCapacity") or evento.get("available_capacity")
-                try:
-                    max_n = int(maximo) if maximo is not None else None
-                    quedan_n = int(quedan) if quedan is not None else None
-                except (TypeError, ValueError):
-                    max_n, quedan_n = None, None
-                inscritos = (
-                    max(0, max_n - quedan_n)
-                    if max_n is not None and quedan_n is not None
-                    else None
-                )
-                ranking.append((inscritos if inscritos is not None else -1, evento, max_n, quedan_n, inscritos))
-                cupos = ""
-                if inscritos is not None and max_n is not None:
-                    cupos = f" · {inscritos}/{max_n} inscritos ({quedan_n} cupos libres)"
-                lineas.append(
-                    f"  · {evento.get('name')} ({evento.get('sportName')}) "
-                    f"el {evento.get('eventDate')} en {evento.get('location')}{cupos}"
-                )
-            ocupados = [f for f in ranking if f[4] is not None]
-            if ocupados:
-                ocupados.sort(key=lambda x: (-x[0], str(x[1].get("name") or "")))
-                top = ocupados[0]
-                lineas.append(
-                    f"- Evento con más inscritos: {top[1].get('name')} "
-                    f"({top[4]}/{top[2]})"
-                )
+            lineas.append(bloque_hechos_eventos(eventos))
         return "\n".join(lineas) or "- Catálogo vacío."
 
     def _rotar(self, usuario_id: str, intencion: str, variantes: list[str]) -> str:
@@ -1598,6 +1586,7 @@ class ChatbotAgent:
                 "exportar_pdf",
                 "usuarios",
                 "cuerpo",
+                "eventos",
             ):
                 return await manejador(
                     usuario_id, discapacidad, authorization, mensaje, **extra
@@ -1612,9 +1601,14 @@ class ChatbotAgent:
             return "", {}
 
     async def _datos_eventos(
-        self, usuario_id: str, discapacidad: str, authorization: Optional[str]
+        self,
+        usuario_id: str,
+        discapacidad: str,
+        authorization: Optional[str],
+        mensaje: str = "",
+        **extra: Any,
     ) -> tuple[str, dict[str, Any]]:
-        """Lista eventos activos priorizando los compatibles con la discapacidad del perfil."""
+        """Lista eventos; si preguntan el próximo/más reciente, responde por fecha."""
         eventos = await self.sports_service.get_eventos_activos(authorization)
         if not eventos:
             return (
@@ -1623,8 +1617,38 @@ class ChatbotAgent:
                 {"eventos": [], "total": 0},
             )
 
+        criterio = criterio_ranking_evento(mensaje)
+        if criterio == "proximo":
+            elegido = proximo_a_iniciar(eventos)
+            if elegido:
+                texto = (
+                    f"El evento más próximo a iniciar es {linea_evento(elegido)}."
+                )
+                return texto, {
+                    "eventos": [elegido],
+                    "total": len(eventos),
+                    "criterio": "proximo",
+                    "reemplaza_respuesta": True,
+                }
+        if criterio == "mas_inscritos":
+            elegido = evento_mas_inscritos(eventos)
+            if elegido:
+                texto = (
+                    f"El evento con más inscripciones es {linea_evento(elegido)}."
+                )
+                return texto, {
+                    "eventos": [elegido],
+                    "total": len(eventos),
+                    "criterio": "mas_inscritos",
+                    "reemplaza_respuesta": True,
+                }
+
         compatibles = []
-        for evento in eventos[:12]:
+        por_fecha = sorted(
+            eventos,
+            key=lambda e: str(e.get("eventDate") or e.get("fecha") or "9999"),
+        )
+        for evento in por_fecha[:12]:
             sport_id = evento.get("sportId")
             adaptaciones = (
                 await self.sports_service.get_adaptaciones_deporte(sport_id, authorization)
@@ -1643,6 +1667,8 @@ class ChatbotAgent:
                 "hora": evento.get("eventTime"),
                 "ubicacion": evento.get("location"),
                 "cupos_disponibles": evento.get("availableCapacity"),
+                "maxCapacity": evento.get("maxCapacity"),
+                "availableCapacity": evento.get("availableCapacity"),
                 "compatible": compatible,
             })
 

@@ -87,7 +87,8 @@ class Settings:
     # La inferencia local en CPU es lenta la primera vez (carga del modelo en RAM),
     # así que el timeout por defecto es holgado.
     LLM_TIMEOUT = _int("LLM_TIMEOUT", 120)
-    LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 800)
+    # 800 cortaba listas de eventos a mitad de palabra (finish_reason=length).
+    LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 2048)
 
     # Kickoff CrewAI: varias iteraciones de LLM + tools. El front debe esperar esto.
     CREW_TIMEOUT_SEGUNDOS = _int("CREW_TIMEOUT_SEGUNDOS", 180)
@@ -100,14 +101,20 @@ class Settings:
     # Las mutaciones del crew son SIEMPRE sandbox. CREW_WRITE_MODE=mcp se ignora
     # (ver app.crew.politica). El chat sigue escribiendo vía MCP con Confirmo.
 
-    # Tras un fallo del proveedor se deja de intentar durante este tiempo, para
-    # que el chat no espere el timeout completo en cada petición.
-    LLM_COOLDOWN_SEGUNDOS = _int("LLM_COOLDOWN_SEGUNDOS", 60)
+    # Tras un fallo DURO (401/403/sin créditos) se deja de intentar un rato.
+    # Los 429/timeout ya no apagan el LLM para todos: van a reintento + otro modelo.
+    LLM_COOLDOWN_SEGUNDOS = _int("LLM_COOLDOWN_SEGUNDOS", 20)
+    LLM_COOLDOWN_TRANSITORIO_SEGUNDOS = _int("LLM_COOLDOWN_TRANSITORIO_SEGUNDOS", 6)
+
+    # Reintentos extra del mismo modelo ante timeout/429/5xx, luego el siguiente.
+    LLM_REINTENTOS_POR_MODELO = _int("LLM_REINTENTOS_POR_MODELO", 1)
+    # Si el modelo corta por max_tokens, pide continuación (evita "Polideport…").
+    LLM_CONTINUACIONES_TRUNCADO = _int("LLM_CONTINUACIONES_TRUNCADO", 2)
 
     # Cuántas llamadas al LLM pueden ir a la vez en este proceso. El resto espera
     # LLM_QUEUE_WAIT_SEGUNDOS y, si no hay hueco, el chat sigue con motor local.
     LLM_MAX_CONCURRENT = _int("LLM_MAX_CONCURRENT", 2)
-    LLM_QUEUE_WAIT_SEGUNDOS = _int("LLM_QUEUE_WAIT_SEGUNDOS", 8)
+    LLM_QUEUE_WAIT_SEGUNDOS = _int("LLM_QUEUE_WAIT_SEGUNDOS", 20)
 
     # Un mismo usuario no puede tener más de N turnos de chat en vuelo (429).
     CHAT_MAX_INFLIGHT_PER_USER = _int("CHAT_MAX_INFLIGHT_PER_USER", 1)
@@ -126,6 +133,9 @@ class Settings:
     CHAT_MAX_CONVERSACIONES_POR_USUARIO = _int("CHAT_MAX_CONVERSACIONES_POR_USUARIO", 10)
     CHAT_HISTORIAL_LLM_TURNOS = _int("CHAT_HISTORIAL_LLM_TURNOS", 6)
     CHAT_MAX_CHARS_MENSAJE = _int("CHAT_MAX_CHARS_MENSAJE", 2000)
+    # La respuesta del asistente no debe recortarse al persistir (2000 chars
+    # dejaba el historial a medias aunque el turno en vivo llegara entero).
+    CHAT_MAX_CHARS_RESPUESTA = _int("CHAT_MAX_CHARS_RESPUESTA", 12000)
     CHAT_RESUMEN_MAX_CHARS = _int("CHAT_RESUMEN_MAX_CHARS", 800)
 
     # Retención de datos efímeros (no toca catálogos ni modo competencia)

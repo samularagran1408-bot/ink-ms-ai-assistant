@@ -101,6 +101,234 @@ def test_respuesta_abierta_no_dice_no_entendi():
         assert "no estoy seguro" not in f
 
 
+def test_proximo_evento_es_por_fecha_no_por_inscritos():
+    from datetime import date
+
+    from app.nlp.eventos_pedido import (
+        criterio_ranking_evento,
+        evento_mas_inscritos,
+        proximo_a_iniciar,
+    )
+
+    assert criterio_ranking_evento("Evento más reciente en iniciar") == "proximo"
+    assert criterio_ranking_evento("cuál es el próximo evento") == "proximo"
+    assert criterio_ranking_evento("el de más inscritos") == "mas_inscritos"
+
+    eventos = [
+        {
+            "name": "Torneo Amistoso de Baloncesto en Silla",
+            "eventDate": "2026-09-21",
+            "location": "Polideportivo Parque Simón Bolívar",
+            "maxCapacity": 20,
+            "availableCapacity": 16,
+        },
+        {
+            "name": "3 km",
+            "sportName": "Running",
+            "eventDate": "2026-09-10",
+            "location": "Colegio del Sur Calarcá",
+            "maxCapacity": 24,
+            "availableCapacity": 24,
+        },
+        {
+            "name": "Jornada inclusiva de Fútbol Sala",
+            "eventDate": "2026-09-12",
+            "maxCapacity": 24,
+            "availableCapacity": 23,
+        },
+    ]
+    hoy = date(2026, 9, 10)
+    proximo = proximo_a_iniciar(eventos, hoy)
+    popular = evento_mas_inscritos(eventos)
+    assert proximo["name"] == "3 km"
+    assert popular["name"] == "Torneo Amistoso de Baloncesto en Silla"
+
+
+def test_unir_continuacion_pega_palabra_cortada():
+    from app.services.llm_service import _unir_continuacion
+
+    assert (
+        _unir_continuacion("en el Polideport", "ivo Municipal.")
+        == "en el Polideportivo Municipal."
+    )
+    assert (
+        _unir_continuacion("en el Polideport", "Polideportivo Municipal.")
+        == "en el Polideportivo Municipal."
+    )
+
+
+def test_fallo_duro_no_incluye_429():
+    import httpx
+
+    from app.services.llm_service import _es_error_red, _es_fallo_duro
+
+    assert _es_fallo_duro(401, "unauthorized") is True
+    assert _es_fallo_duro(429, "rate-limited") is False
+    assert _es_error_red(httpx.TimeoutException("timed out")) is True
+
+
+def _reset_llm_estado() -> None:
+    from app.services.llm_service import LLMService
+
+    LLMService._bloqueado_hasta = 0.0
+    LLMService._free_cuota_hasta = 0.0
+    LLMService._ultimo_error = None
+    LLMService._sema = None
+    LLMService._en_curso = 0
+
+
+def _svc_openrouter():
+    from app.services.llm_service import LLMService
+
+    svc = LLMService()
+    svc.habilitado = True
+    svc.api_key = "sk-or-test"
+    svc.api_url = "https://openrouter.ai/api/v1/chat/completions"
+    svc.proveedor = "openrouter"
+    svc.model = "google/gemma-4-26b-a4b-it:free"
+    svc.timeout = 5
+    return svc
+
+
+def test_timeout_prueba_siguiente_modelo():
+    """Un timeout del :free no debe activar cooldown ni abortar el turno."""
+    import asyncio
+    import json
+    import time
+    from unittest.mock import patch
+
+    import httpx
+
+    from app.config import settings
+    from app.services.llm_service import LLMService
+
+    class FakeResp:
+        def __init__(self, status, data=None):
+            self.status_code = status
+            self._data = data or {}
+            self.text = json.dumps(self._data)
+
+        def json(self):
+            return self._data
+
+    ok = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "Respuesta completa."},
+            }
+        ]
+    }
+    posts = [httpx.TimeoutException("timed out"), FakeResp(200, ok)]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            item = posts.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+    async def _noop(_intento: int) -> None:
+        return None
+
+    _reset_llm_estado()
+    prev_reint = settings.LLM_REINTENTOS_POR_MODELO
+    settings.LLM_REINTENTOS_POR_MODELO = 0
+    try:
+        svc = _svc_openrouter()
+
+        async def run():
+            with patch(
+                "app.services.llm_service.httpx.AsyncClient",
+                side_effect=lambda *a, **k: FakeClient(),
+            ), patch("app.services.llm_service._esperar_reintento", _noop):
+                return await svc.completar([{"role": "user", "content": "hola"}])
+
+        resultado = asyncio.run(run())
+        assert resultado.content == "Respuesta completa."
+        assert LLMService._bloqueado_hasta <= time.monotonic()
+        assert LLMService._ultimo_error is None
+    finally:
+        settings.LLM_REINTENTOS_POR_MODELO = prev_reint
+        _reset_llm_estado()
+
+
+def test_continuacion_si_finish_reason_length():
+    import asyncio
+    import json
+    from unittest.mock import patch
+
+    from app.config import settings
+    from app.services.llm_service import LLMService
+
+    class FakeResp:
+        def __init__(self, status, data=None):
+            self.status_code = status
+            self._data = data or {}
+            self.text = json.dumps(self._data)
+
+        def json(self):
+            return self._data
+
+    cortado = {
+        "choices": [
+            {
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": "Tu próximo evento es en el Polideport",
+                },
+            }
+        ]
+    }
+    resto = {
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ivo Municipal."},
+            }
+        ]
+    }
+    posts = [FakeResp(200, cortado), FakeResp(200, resto)]
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return posts.pop(0)
+
+    _reset_llm_estado()
+    prev_cont = settings.LLM_CONTINUACIONES_TRUNCADO
+    settings.LLM_CONTINUACIONES_TRUNCADO = 2
+    try:
+        svc = _svc_openrouter()
+
+        async def run():
+            with patch(
+                "app.services.llm_service.httpx.AsyncClient",
+                side_effect=lambda *a, **k: FakeClient(),
+            ):
+                return await svc.completar([{"role": "user", "content": "evento"}])
+
+        resultado = asyncio.run(run())
+        assert resultado.content == "Tu próximo evento es en el Polideportivo Municipal."
+        assert (resultado.finish_reason or "").lower() == "stop"
+        assert LLMService._ultimo_error is None
+    finally:
+        settings.LLM_CONTINUACIONES_TRUNCADO = prev_cont
+        _reset_llm_estado()
+
+
 def test_extraer_destino_por_nombre():
     dest = extraer_destino_bloqueo("Bloquear a Samu Lara porque no asiste")
     assert "samu" in dest.lower()

@@ -80,6 +80,7 @@ class ConversacionService:
         self.max_conversaciones = settings.CHAT_MAX_CONVERSACIONES_POR_USUARIO
         self.turnos_llm = settings.CHAT_HISTORIAL_LLM_TURNOS
         self.max_chars_msg = settings.CHAT_MAX_CHARS_MENSAJE
+        self.max_chars_respuesta = settings.CHAT_MAX_CHARS_RESPUESTA
         self.max_chars_resumen = settings.CHAT_RESUMEN_MAX_CHARS
 
     # ---------------------------------------------------------------- lectura LLM
@@ -104,10 +105,12 @@ class ConversacionService:
 
         historial: list[dict[str, str]] = []
         for m in recientes:
-            texto = _recortar(str(m.get("mensaje") or ""), self.max_chars_msg)
+            es_asistente = m.get("remitente") == REMITENTE_ASISTENTE
+            tope = self.max_chars_respuesta if es_asistente else self.max_chars_msg
+            texto = _recortar(str(m.get("mensaje") or ""), tope)
             if not texto:
                 continue
-            rol = "assistant" if m.get("remitente") == REMITENTE_ASISTENTE else "user"
+            rol = "assistant" if es_asistente else "user"
             historial.append({"role": rol, "content": texto})
 
         resumen = (doc.get("resumen") or "").strip()
@@ -160,7 +163,7 @@ class ConversacionService:
             return
 
         mensaje_usuario = _recortar(mensaje_usuario, self.max_chars_msg)
-        respuesta = _recortar(str(resultado.get("respuesta") or ""), self.max_chars_msg)
+        respuesta = _recortar(str(resultado.get("respuesta") or ""), self.max_chars_respuesta)
         if not mensaje_usuario or not respuesta:
             return
 
