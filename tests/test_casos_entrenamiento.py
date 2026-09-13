@@ -58,6 +58,8 @@ def test_detectar_frases_simples():
     assert detectar_comando_entrenamiento("Competir contra mi historial") == "competencia_historial"
     assert detectar_comando_entrenamiento("Avisa al entrenador") == "alerta_entrenador"
     assert detectar_comando_entrenamiento("Notifica progreso destacado") == "progreso_entrenador"
+    assert detectar_comando_entrenamiento("Acumulé 3 alertas de riesgo esta semana") == "umbral_alertas_semana"
+    assert detectar_comando_entrenamiento("Notificación push y correo") == "umbral_alertas_semana"
     assert detectar_comando_entrenamiento("Mi progreso") == "dashboard"
     assert detectar_comando_entrenamiento("Publica una rutina de fuerza") is None
     assert detectar_comando_entrenamiento("Crea un deporte de running") is None
@@ -181,6 +183,16 @@ def test_hu50():
     b = _run(_cmd("progreso_entrenador", "Notifica progreso destacado RPE 3"))
     assert b["datos"]["caso_prueba"] == "CP32-HU50"
     assert any(x.get("tipo") == "PROGRESO_DESTACADO" for x in b["datos"]["alertas"])
+    c = _run(_cmd("umbral_alertas_semana", "Acumulé 3 alertas de riesgo esta semana"))
+    assert c["datos"]["caso_prueba"] == "CP33-HU50"
+    assert c["datos"]["alertas_semana"] >= 3
+    assert c["datos"]["notificado"] is True
+    assert "push" in c["datos"]["canales"]
+    assert "email" in c["datos"]["canales"]
+    notif = c["datos"]["notificacion_usuario"]
+    assert notif["tipo"] == "RIESGO_SEMANAL"
+    assert "push" in notif["canales"] and "email" in notif["canales"]
+    assert "push" in c["respuesta"].lower() and "correo" in c["respuesta"].lower()
 
 
 def _ejecutar_todo() -> int:

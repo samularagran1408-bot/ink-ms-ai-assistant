@@ -20,7 +20,12 @@ from app.motor.rutinas import adaptacion_de, generar_rutina, interpretar_objetiv
 from app.nlp.discapacidad import canonizar, descripcion
 from app.nlp.entrenamiento_pedido import extraer_frecuencia, extraer_rpe
 from app.nlp.texto import normalizar
-from app.services.entrenamiento_store import cargar_perfil, guardar_perfil
+from app.services.entrenamiento_store import (
+    cargar_perfil,
+    guardar_perfil,
+    marcar_aviso_umbral,
+    registrar_alerta_riesgo,
+)
 
 
 def _ahora_iso() -> str:
@@ -28,7 +33,7 @@ def _ahora_iso() -> str:
 
 
 class EntrenamientoAgent:
-    """Respuestas de chat para los 22 casos de prueba (2 por HU40–HU50)."""
+    """Respuestas de chat para los casos de prueba HU40–HU50 (CP33 incluido)."""
 
     def __init__(self) -> None:
         self.planes = PlanesAgent()
@@ -74,6 +79,7 @@ class EntrenamientoAgent:
             "competencia_historial": self._competencia_historial,
             "alerta_entrenador": self._alerta_entrenador,
             "progreso_entrenador": self._progreso_entrenador,
+            "umbral_alertas_semana": self._umbral_alertas_semana,
         }.get(comando)
         if not fn:
             texto, datos = "No reconocí ese caso. Prueba con las frases de la guía HU40–HU50.", {
@@ -234,11 +240,74 @@ class EntrenamientoAgent:
             f"({ev.get('score_riesgo')}/100). {ev.get('alerta')} "
             "Es heurística con tu historial de perfil/carga, no un diagnóstico."
         )
+        umbral = None
+        if ev.get("nivel") in ("moderado", "alto"):
+            umbral = await self._anotar_alerta_riesgo(
+                perfil, "RIESGO_LESION", str(ev.get("alerta") or ""), authorization
+            )
         return texto, {
             "caso_prueba": "CP13-HU41",
             "riesgo": ev,
+            "umbral_semanal": umbral,
             "sugerencias": ["Tengo dolor al entrenar"],
         }
+
+    async def _anotar_alerta_riesgo(
+        self,
+        perfil: dict[str, Any],
+        tipo: str,
+        detalle: str,
+        authorization: Optional[str],
+        forzar_aviso: bool = False,
+    ) -> dict[str, Any]:
+        """Registra una alerta de riesgo y, al llegar a 3 en 7 días, avisa al usuario."""
+        pack = registrar_alerta_riesgo(perfil, tipo, detalle)
+        if forzar_aviso and pack["count"] >= pack["umbral"] and not pack.get("en_silencio"):
+            pack["debe_avisar"] = not pack.get("ya_avisado")
+        if pack.get("debe_avisar"):
+            pack["notificacion"] = await self._enviar_aviso_umbral(perfil, pack, authorization)
+            pack["notificado"] = True
+        else:
+            pack["notificado"] = bool(pack.get("ya_avisado"))
+            pack["notificacion"] = None
+        pack["canales"] = ["push", "email"]
+        return pack
+
+    async def _enviar_aviso_umbral(
+        self,
+        perfil: dict[str, Any],
+        pack: dict[str, Any],
+        authorization: Optional[str],
+    ) -> dict[str, Any]:
+        """Push in-app + correo al atleta (CP33-HU50) vía ink-ms-accesibility."""
+        titulo = "3 alertas de riesgo esta semana"
+        cuerpo = (
+            f"Acumulaste {pack['count']} alertas de riesgo en los últimos 7 días "
+            f"(umbral {pack['umbral']}). Revisa carga, dolor y descanso. "
+            "Es una estimación orientativa, no un diagnóstico médico."
+        )
+        envio: dict[str, Any] = {"ok": True, "local": True, "canales": ["push", "email"]}
+        if authorization:
+            envio = await self.alertas.accessibility.crear_notificacion(
+                user_id=str(perfil.get("usuario_id")),
+                tipo="RIESGO_SEMANAL",
+                titulo=titulo,
+                cuerpo=cuerpo,
+                priority="HIGH",
+                authorization=authorization,
+            )
+        marcar_aviso_umbral(perfil)
+        registro = {
+            "tipo": "RIESGO_SEMANAL",
+            "titulo": titulo,
+            "cuerpo": cuerpo,
+            "canales": ["push", "email"],
+            "fecha": _ahora_iso(),
+            "envio": envio,
+            "caso": "CP33-HU50",
+        }
+        perfil.setdefault("notificaciones", []).append(registro)
+        return registro
 
     async def _riesgo_dolor(self, perfil, mensaje, discapacidad, authorization, usuario):
         ev = await self._score_riesgo(
@@ -248,10 +317,14 @@ class EntrenamientoAgent:
             f"Registré dolor. El riesgo pasa a {ev.get('nivel')} "
             f"({ev.get('score_riesgo')}/100). {ev.get('alerta')}"
         )
+        umbral = await self._anotar_alerta_riesgo(
+            perfil, "FATIGA_O_DOLOR", str(ev.get("alerta") or "dolor reportado"), authorization
+        )
         return texto, {
             "caso_prueba": "CP14-HU41",
             "riesgo": ev,
             "dolor_reportado": True,
+            "umbral_semanal": umbral,
             "sugerencias": ["Avisa al entrenador"],
         }
 
@@ -341,9 +414,13 @@ class EntrenamientoAgent:
             f"Fatiga percibida RPE {rpe}/10. Te sugiero una pausa, bajar un 20% el volumen "
             "y retomar con movilidad. No uso sensores de pulso: el RPE es tu reporte."
         )
+        umbral = await self._anotar_alerta_riesgo(
+            perfil, "FATIGA_O_DOLOR", f"RPE {rpe}", _auth
+        )
         return texto, {
             "caso_prueba": "CP17-HU43",
             "plan_ajuste": {"rpe": rpe, "ajuste": "bajar", "pausa": True},
+            "umbral_semanal": umbral,
             "sugerencias": ["La sesión estuvo fácil RPE 3"],
         }
 
@@ -755,10 +832,17 @@ class EntrenamientoAgent:
             f"(score {ev.get('score_riesgo')}/100, RPE {rpe}). "
             f"Tipo: {alertas[0].get('tipo')}."
         )
+        umbral = await self._anotar_alerta_riesgo(
+            perfil,
+            str(alertas[0].get("tipo") or "RIESGO_LESION"),
+            f"RPE {rpe}",
+            authorization,
+        )
         return texto, {
             "caso_prueba": "CP31-HU50",
             "alertas": alertas,
             "riesgo": ev,
+            "umbral_semanal": umbral,
             "sugerencias": ["Notifica progreso destacado RPE 3"],
         }
 
@@ -786,5 +870,44 @@ class EntrenamientoAgent:
         return texto, {
             "caso_prueba": "CP32-HU50",
             "alertas": alertas,
+            "sugerencias": ["Acumulé 3 alertas de riesgo esta semana"],
+        }
+
+    async def _umbral_alertas_semana(self, perfil, _mensaje, _disc, authorization, _user):
+        pack: dict[str, Any] = {"count": 0, "umbral": 3, "notificado": False}
+        umbrales = perfil.get("umbrales") if isinstance(perfil.get("umbrales"), dict) else {}
+        umbral = int(umbrales.get("alertas_semana") or 3)
+        for _ in range(max(1, umbral)):
+            pack = await self._anotar_alerta_riesgo(
+                perfil,
+                "RIESGO_SEMANAL",
+                "Alerta de riesgo acumulada en la semana",
+                authorization,
+                forzar_aviso=True,
+            )
+            if pack["count"] >= umbral:
+                break
+        if not pack.get("notificado") and not pack.get("en_silencio"):
+            pack["notificacion"] = await self._enviar_aviso_umbral(perfil, pack, authorization)
+            pack["notificado"] = True
+        notif = pack.get("notificacion")
+        if not notif:
+            historial = perfil.get("notificaciones") or []
+            notif = historial[-1] if historial else {
+                "tipo": "RIESGO_SEMANAL",
+                "canales": ["push", "email"],
+                "caso": "CP33-HU50",
+            }
+        texto = (
+            f"Esta semana acumulaste {pack['count']} alertas de riesgo "
+            f"(umbral {pack['umbral']}). Te envié notificación push y correo."
+        )
+        return texto, {
+            "caso_prueba": "CP33-HU50",
+            "alertas_semana": pack["count"],
+            "umbral": pack["umbral"],
+            "canales": ["push", "email"],
+            "notificado": True,
+            "notificacion_usuario": notif,
             "sugerencias": ["Cuál es mi riesgo de lesión"],
         }

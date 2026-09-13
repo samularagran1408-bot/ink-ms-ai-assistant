@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from app.database.mongodb import get_db
 from app.database.repositorio import COL_ENTRENAMIENTO
@@ -68,6 +68,66 @@ async def cargar_perfil(usuario_id: str) -> dict[str, Any]:
     if clave not in _MEMORIA:
         _MEMORIA[clave] = perfil_vacio(clave)
     return deepcopy(_MEMORIA[clave])
+
+
+def _parse_iso(valor: Any) -> Optional[datetime]:
+    """ISO-8601 a datetime UTC, o None si no se puede leer."""
+    if not valor:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def alertas_en_semana(perfil: dict[str, Any], ahora: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """Alertas de riesgo del perfil en los últimos 7 días."""
+    ahora = ahora or datetime.now(timezone.utc)
+    limite = ahora - timedelta(days=7)
+    recientes: list[dict[str, Any]] = []
+    for item in perfil.get("alertas_riesgo") or []:
+        if not isinstance(item, dict):
+            continue
+        fecha = _parse_iso(item.get("fecha"))
+        if fecha and fecha >= limite:
+            recientes.append(item)
+    return recientes
+
+
+def registrar_alerta_riesgo(
+    perfil: dict[str, Any],
+    tipo: str,
+    detalle: str = "",
+) -> dict[str, Any]:
+    """Añade una alerta de riesgo y dice si hay que avisar al usuario (CP33-HU50)."""
+    ahora = datetime.now(timezone.utc)
+    perfil.setdefault("alertas_riesgo", []).append({
+        "tipo": tipo,
+        "detalle": detalle,
+        "fecha": ahora.isoformat(),
+    })
+    umbrales = perfil.get("umbrales") if isinstance(perfil.get("umbrales"), dict) else {}
+    umbral = int(umbrales.get("alertas_semana") or 3)
+    semana = alertas_en_semana(perfil, ahora)
+    ultimo = _parse_iso(perfil.get("aviso_umbral_semana_en"))
+    ya_avisado = bool(ultimo and ultimo >= ahora - timedelta(days=7))
+    silenciado = _parse_iso(perfil.get("silenciado_hasta"))
+    en_silencio = bool(silenciado and silenciado > ahora)
+    return {
+        "count": len(semana),
+        "umbral": umbral,
+        "debe_avisar": len(semana) >= umbral and not ya_avisado and not en_silencio,
+        "ya_avisado": ya_avisado,
+        "en_silencio": en_silencio,
+    }
+
+
+def marcar_aviso_umbral(perfil: dict[str, Any]) -> None:
+    """Marca que ya se envió el aviso semanal de 3 alertas."""
+    perfil["aviso_umbral_semana_en"] = datetime.now(timezone.utc).isoformat()
 
 
 async def guardar_perfil(perfil: dict[str, Any]) -> dict[str, Any]:

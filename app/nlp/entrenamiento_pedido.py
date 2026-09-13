@@ -9,6 +9,15 @@ from app.nlp.texto import normalizar
 
 # Más específico primero.
 _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("umbral_alertas_semana", (
+        "3 alertas de riesgo",
+        "tres alertas de riesgo",
+        "alertas de riesgo esta semana",
+        "acumule 3 alertas",
+        "acumulo 3 alertas",
+        "notificacion push y correo",
+        "push y correo",
+    )),
     ("detectar_discapacidad", (
         "silla de ruedas", "detecta mi discapacidad", "detectar discapacidad",
         "configuracion de accesibilidad", "soy ciego", "soy sordo",

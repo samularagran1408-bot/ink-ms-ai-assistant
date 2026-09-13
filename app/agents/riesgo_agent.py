@@ -10,6 +10,7 @@ from app.database.mongodb import get_db
 from app.database.repositorio import COL_EVALUACIONES_RIESGO, COL_SESIONES_RPE
 from app.motor.cuerpo import mapa_corporal
 from app.nlp.discapacidad import canonizar, descripcion
+from app.services.riesgo_umbral import resetear_aviso_si_bajo_umbral, resetear_aviso_umbral, revisar_historial_y_avisar
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
 
@@ -130,6 +131,15 @@ class RiesgoAgent:
         }
         if persistir:
             await self._guardar_evaluacion(resultado)
+            try:
+                resultado["umbral_semanal"] = await revisar_historial_y_avisar(
+                    uid,
+                    email=perfil.get("email"),
+                    authorization=authorization,
+                )
+            except Exception as exc:
+                print(f"No se pudo revisar umbral semanal de riesgo: {exc}")
+                resultado["umbral_semanal"] = None
         return resultado
 
     async def listar_historial(self, usuario_id: str, limite: int = 20) -> list[dict[str, Any]]:
@@ -158,6 +168,8 @@ class RiesgoAgent:
             res = await db[COL_EVALUACIONES_RIESGO].delete_one(
                 {"usuario_id": usuario_id, "id": evaluacion_id}
             )
+            if (res.deleted_count or 0) > 0:
+                await resetear_aviso_si_bajo_umbral(usuario_id)
             return (res.deleted_count or 0) > 0
         except Exception as exc:
             print(f"No se pudo borrar evaluación de riesgo: {exc}")
@@ -170,6 +182,7 @@ class RiesgoAgent:
             return 0
         try:
             res = await db[COL_EVALUACIONES_RIESGO].delete_many({"usuario_id": usuario_id})
+            await resetear_aviso_umbral(usuario_id)
             return int(res.deleted_count or 0)
         except Exception as exc:
             print(f"No se pudo vaciar historial de riesgo: {exc}")

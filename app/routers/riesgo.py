@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.riesgo_agent import RiesgoAgent
 from app.deps.contexto import resolver_contexto
+from app.services.riesgo_umbral import conteo_historial_semana
 
 router = APIRouter()
 agent = RiesgoAgent()
@@ -112,10 +113,14 @@ async def historial_riesgo(
     """RF43 — historial de evaluaciones de riesgo del atleta (se pueden borrar)."""
     ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
     items = await agent.listar_historial(ctx.id)
+    email = (ctx.perfil or {}).get("email") or ctx.email
+    semana = await conteo_historial_semana(ctx.id, email)
     return {
         "usuario_id": ctx.id,
         "total": len(items),
         "evaluaciones": items,
+        "alertas_semana": semana,
+        "umbral_semana": 3,
         "rf": "RF43",
     }
 
