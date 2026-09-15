@@ -16,6 +16,7 @@ from app.database.repositorio import (
     COL_CONOCIMIENTO,
     COL_CONVERSACIONES,
     COL_EJERCICIOS,
+    COL_MODO_COMPETENCIA,
     COL_PLANES,
     COL_QUIZ,
     COL_QUIZZES,
@@ -107,5 +108,8 @@ async def _crear_indices() -> None:
         await db[COL_ALERTAS].create_index("creado_en", name="alertas_retencion")
         await db[COL_PLANES].create_index("creado_en", name="planes_retencion")
         await db[COL_SESIONES_RPE].create_index("fecha", name="rpe_retencion")
+        # El entrenador consulta el modo competencia antes de cada asistencia.
+        await db[COL_MODO_COMPETENCIA].create_index("usuario_id", name="modo_usuario")
+        await db[COL_MODO_COMPETENCIA].create_index("email", name="modo_email")
     except Exception as exc:
         print(f"No se pudieron crear todos los índices: {exc}")

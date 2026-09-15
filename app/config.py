@@ -93,7 +93,16 @@ class Settings:
     LLM_API_URL = _primero("LLM_API_URL", "GROK_API_URL", defecto="")
 
     # Timeout corto: si el proveedor no responde a tiempo, el chat sigue con motor local.
-    LLM_TIMEOUT = _int("LLM_TIMEOUT", 30)
+    LLM_TIMEOUT = _int("LLM_TIMEOUT", 8)
+    # Tope de TODA la fase LLM (cola + reintentos + modelos alternativos). Los
+    # reintentos encadenados llegaban a 12 s aunque cada intento cortara a 2 s;
+    # con este presupuesto ninguna acción se pasa de los ~3 s prometidos.
+    LLM_PRESUPUESTO_SEGUNDOS = _float("LLM_PRESUPUESTO_SEGUNDOS", 2.5)
+    # El chat es la excepción: ahí el usuario espera una respuesta escrita por el
+    # modelo, no una ficha de la plataforma. Con 2,5 s ningún modelo real llega a
+    # terminar y todo caía en la respuesta de cortesía. El widget va en streaming,
+    # así que ve texto mucho antes de que se agote esta ventana.
+    CHAT_PRESUPUESTO_SEGUNDOS = _float("CHAT_PRESUPUESTO_SEGUNDOS", 12.0)
     # 800 cortaba listas de eventos a mitad de palabra (finish_reason=length).
     LLM_MAX_TOKENS = _int("LLM_MAX_TOKENS", 2048)
     # Baja (~0.2): respuestas más deterministas; el historial corto recorta el contexto.

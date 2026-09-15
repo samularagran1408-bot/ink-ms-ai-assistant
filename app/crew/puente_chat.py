@@ -1,8 +1,8 @@
 """El chat del producto no usa CrewAI por defecto (CHAT_ORQUESTA_CREW=false).
 
-Eventos, rutinas y quiz van al motor local (Sports/Users). CrewAI queda en
-POST /api/ai/crew. Si se activa el flag, este puente cubre consulta,
-investigación, quiz y competencia. Las altas reales siguen en MCP + Confirmo.
+El chat flotante es consulta e investigación. CrewAI de competencia, riesgo
+o rutinas queda en POST /api/ai/crew o en sus apartados. Si se activa el
+flag, este puente solo cubre consulta, investigación y quiz.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from app.crew.enrutar import (
 )
 from app.crew.schemas import InformeCrew
 
-_DOMINIOS_CHAT = frozenset({"consulta", "investigacion", "quiz", "competencia"})
+_DOMINIOS_CHAT = frozenset({"consulta", "investigacion", "quiz"})
 
 _META_MARCAS = (
     "model context protocol",

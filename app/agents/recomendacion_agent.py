@@ -2,14 +2,14 @@
 
 Puntúa los eventos reales de ink-ms-sports combinando compatibilidad con la
 discapacidad del perfil, cercanía de la fecha, disponibilidad de cupos y estado
-del evento. El LLM, si está disponible, solo redacta el mensaje de cierre: el
-orden y los motivos se calculan con datos, no se inventan.
+del evento. El orden y los motivos se calculan con datos, no se inventan. El
+mensaje de cierre es local para no bloquear la respuesta esperando al LLM.
 """
 
 from datetime import date
 from typing import Any, Optional
+import asyncio
 
-from app.services.llm_service import LLMService
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
 from app.nlp.discapacidad import canonizar, coincide, descripcion
@@ -21,8 +21,7 @@ class RecomendacionAgent:
     """Puntúa eventos reales de sports y recomienda los más compatibles (RF49)."""
 
     def __init__(self):
-        """Inicializa LLM (mensaje de cierre), users y sports."""
-        self.llm = LLMService()
+        """Inicializa users y sports."""
         self.user_service = UserService()
         self.sports_service = SportsService()
 
@@ -35,8 +34,8 @@ class RecomendacionAgent:
     ) -> dict[str, Any]:
         """Devuelve hasta `limite` eventos abiertos no inscritos, ordenados por puntaje.
 
-        Descarta cancelados, finalizados y fechas pasadas. El LLM, si está
-        disponible, solo redacta el mensaje de cierre; el ranking es heurístico.
+        Descarta cancelados, finalizados y fechas pasadas. El ranking es heurístico;
+        el mensaje de cierre no espera al LLM.
         """
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad_origen = perfil.get("disability") or "general"
@@ -96,7 +95,7 @@ class RecomendacionAgent:
         compatibles = sum(1 for c in candidatos if c["compatible_discapacidad"])
         return {
             "recomendaciones": recomendados,
-            "mensaje": await self._mensaje_cierre(
+            "mensaje": self._mensaje_cierre(
                 nombre, discapacidad, recomendados, compatibles, len(disponibles)
             ),
             "usuario": usuario,
@@ -142,19 +141,26 @@ class RecomendacionAgent:
         authorization: Optional[str],
     ) -> list[dict[str, Any]]:
         """Asigna puntaje a cada evento (adaptaciones, fecha, cupos, estado) y los ordena."""
-        adaptaciones_cache: dict[Any, list[dict]] = {}
+        sport_ids = list({e.get("sportId") for e in eventos if e.get("sportId") is not None})
+        ads_list = (
+            await asyncio.gather(
+                *[
+                    self.sports_service.get_adaptaciones_deporte(sid, authorization)
+                    for sid in sport_ids
+                ]
+            )
+            if sport_ids
+            else []
+        )
+        adaptaciones_cache: dict[Any, list[dict]] = {
+            sid: ads for sid, ads in zip(sport_ids, ads_list)
+        }
         hoy = date.today()
         candidatos = []
 
         for evento in eventos:
             sport_id = evento.get("sportId")
-            if sport_id not in adaptaciones_cache:
-                adaptaciones_cache[sport_id] = (
-                    await self.sports_service.get_adaptaciones_deporte(sport_id, authorization)
-                    if sport_id is not None
-                    else []
-                )
-            adaptaciones = adaptaciones_cache[sport_id]
+            adaptaciones = adaptaciones_cache.get(sport_id) or []
 
             relevantes = [
                 {"discapacidad": a.get("disabilityName"), "adaptacion": a.get("adaptations")}
@@ -234,7 +240,7 @@ class RecomendacionAgent:
             return None
         return (objetivo - hoy).days
 
-    async def _mensaje_cierre(
+    def _mensaje_cierre(
         self,
         nombre: str,
         discapacidad: str,
@@ -242,26 +248,15 @@ class RecomendacionAgent:
         compatibles: int,
         total: int,
     ) -> str:
-        """Redacta el mensaje de cierre; usa LLM si está disponible, si no un texto fijo."""
+        """Mensaje de cierre local (sin round-trip al LLM)."""
         base = (
             f"{nombre}, encontré {len(recomendados)} evento(s) recomendables de "
             f"{total} disponibles"
         )
-        base += (
-            f", y {compatibles} tienen adaptaciones registradas para tu perfil."
-            if compatibles
-            else ". Ninguno tiene todavía adaptaciones registradas para tu discapacidad."
+        if compatibles:
+            return (
+                f"{base}, y {compatibles} tienen adaptaciones registradas para tu perfil."
+            )
+        return (
+            f"{base}. Ninguno tiene todavía adaptaciones registradas para tu discapacidad."
         )
-
-        if not self.llm.disponible:
-            return base
-
-        listado = "; ".join(
-            f"{r['evento']} ({r['deporte']}, {r['fecha']})" for r in recomendados
-        )
-        prompt = (
-            f"Redacta en 2 frases un mensaje para {nombre}, con {descripcion(discapacidad)}, "
-            f"presentando estos eventos ya seleccionados: {listado}. No añadas eventos que "
-            "no estén en la lista ni cambies sus datos."
-        )
-        return await self.llm.texto(prompt, discapacidad) or base

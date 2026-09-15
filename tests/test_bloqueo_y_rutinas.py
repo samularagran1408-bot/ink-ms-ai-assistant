@@ -485,6 +485,22 @@ def test_objetivos_distintos_no_repite_ejercicios():
     assert not (_nombres(fuerza) & _nombres(movilidad))
 
 
+def test_notas_de_generacion_son_locales():
+    from app.agents.planes_agent import PlanesAgent
+    from app.agents.rutinas_agent import RutinasAgent
+
+    nota = RutinasAgent()._nota_personalizada(
+        {"objetivo": "fuerza", "duracion_estimada_minutos": 30, "nivel": "principiante"},
+        "Ana",
+    )
+    assert "Ana" in nota and "fuerza" in nota
+    resumen = PlanesAgent()._resumen(
+        {"semanas": 4, "total_sesiones": 12, "objetivo": "fuerza", "sesiones_por_semana": 3},
+        "Ana",
+    )
+    assert "12 sesiones" in resumen and "fuerza" in resumen
+
+
 def _ejecutar_todo() -> int:
     pruebas = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     fallidas = 0

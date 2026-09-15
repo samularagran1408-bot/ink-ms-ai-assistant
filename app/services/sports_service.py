@@ -3,9 +3,8 @@
 import asyncio
 from typing import Any, Optional
 
-import httpx
-
 from app.config import settings
+from app.services.http_client import get_json
 
 
 class SportsService:
@@ -24,18 +23,14 @@ class SportsService:
 
     async def _get_json(self, path: str, authorization: Optional[str] = None, default: Any = None) -> Any:
         """GET a ``path`` relativo de ink-ms-sports. Devuelve JSON 200 o ``default`` (lista vacía)."""
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(
-                    f"{self.base_url}{path}",
-                    headers=self._headers(authorization) or None,
-                )
-                if response.status_code == 200:
-                    return response.json()
-                return default if default is not None else []
-        except Exception as e:
-            print(f"Error llamando sports {path}: {e}")
-            return default if default is not None else []
+        respaldo = default if default is not None else []
+        data = await get_json(
+            f"{self.base_url}{path}",
+            headers=self._headers(authorization),
+            timeout=2.5,
+            default=respaldo,
+        )
+        return data
 
     async def get_eventos(
         self,
@@ -162,17 +157,19 @@ class SportsService:
         Llama ``GET /api/routine-registrations/user/{usuario_id}`` y las enriquece
         con ``GET /api/routines`` (nombre, deporte, nivel, duración).
         """
-        registros = await self._get_json(
-            f"/api/routine-registrations/user/{usuario_id}",
-            authorization,
-            default=[],
+        # Las dos consultas son independientes: en paralelo cuesta lo que la más lenta.
+        registros, publicadas = await asyncio.gather(
+            self._get_json(
+                f"/api/routine-registrations/user/{usuario_id}",
+                authorization,
+                default=[],
+            ),
+            self.get_rutinas_publicadas(authorization),
         )
         if not isinstance(registros, list):
             return []
 
-        rutinas_por_id = {
-            r.get("id"): r for r in await self.get_rutinas_publicadas(authorization) if r.get("id")
-        }
+        rutinas_por_id = {r.get("id"): r for r in publicadas if r.get("id")}
         # Incluir también rutinas del entrenador listadas por id si hace falta
         enriquecidos = []
         for reg in registros:

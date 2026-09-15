@@ -5,6 +5,7 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services.http_client import get_client
 
 
 class AccessibilityService:
@@ -47,19 +48,20 @@ class AccessibilityService:
         if event_id:
             payload["eventId"] = event_id
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                respuesta = await client.post(
-                    f"{self.base_url}/api/notifications/internal/create",
-                    json=payload,
-                    headers=self._headers(authorization) or None,
-                )
-                if respuesta.status_code < 300:
-                    return {"ok": True, "status": respuesta.status_code, "data": respuesta.json()}
-                return {
-                    "ok": False,
-                    "status": respuesta.status_code,
-                    "error": respuesta.text[:300],
-                }
+            cliente = await get_client()
+            respuesta = await cliente.post(
+                f"{self.base_url}/api/notifications/internal/create",
+                json=payload,
+                headers=self._headers(authorization) or None,
+                timeout=httpx.Timeout(5.0, connect=1.5),
+            )
+            if respuesta.status_code < 300:
+                return {"ok": True, "status": respuesta.status_code, "data": respuesta.json()}
+            return {
+                "ok": False,
+                "status": respuesta.status_code,
+                "error": respuesta.text[:300],
+            }
         except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -76,14 +78,16 @@ class AccessibilityService:
         si el microservicio no responde 200.
         """
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                respuesta = await client.post(
-                    f"{self.base_url}/api/voice/interpret",
-                    json={"input": texto, "language": language, "log": True},
-                    headers=self._headers(authorization) or None,
-                )
-                if respuesta.status_code == 200:
-                    return respuesta.json() if isinstance(respuesta.json(), dict) else {"raw": respuesta.json()}
-                return {"ok": False, "status": respuesta.status_code}
+            cliente = await get_client()
+            respuesta = await cliente.post(
+                f"{self.base_url}/api/voice/interpret",
+                json={"input": texto, "language": language, "log": True},
+                headers=self._headers(authorization) or None,
+                timeout=httpx.Timeout(5.0, connect=1.5),
+            )
+            if respuesta.status_code == 200:
+                cuerpo = respuesta.json()
+                return cuerpo if isinstance(cuerpo, dict) else {"raw": cuerpo}
+            return {"ok": False, "status": respuesta.status_code}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}

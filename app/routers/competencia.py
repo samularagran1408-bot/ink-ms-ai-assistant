@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.agents.competencia_agent import CompetenciaAgent
@@ -33,6 +33,18 @@ class SesionRequest(BaseModel):
     """Identificador de la rutina inscrita cuya sesión se registra hoy."""
 
     routine_id: str = Field(..., min_length=1)
+
+
+class EventoAsistidoRequest(BaseModel):
+    """Atleta y evento de un check-in ya confirmado en ink-ms-sports."""
+
+    usuario_id: str = Field(..., min_length=1)
+    evento_id: str = Field(..., min_length=1)
+    email: Optional[str] = None
+    evento_nombre: Optional[str] = None
+
+
+ROLES_REGISTRAN_ASISTENCIA = ("ADMIN", "ORGANIZADOR", "ENTRENADOR")
 
 
 def _accion_http(exc: CompetenciaAccionError) -> HTTPException:
@@ -79,6 +91,79 @@ async def obtener_modo_competencia(
     try:
         ctx = await resolver_contexto(authorization, usuario_id, require_auth=True)
         return await agent.obtener_modo(ctx.id, authorization=ctx.authorization)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/evento-asistido")
+async def registrar_evento_asistido(
+    body: EventoAsistidoRequest = Body(...),
+    authorization: Optional[str] = Header(None),
+):
+    """RF53 — la asistencia confirmada a un evento suma al plan del atleta.
+
+    La llama ink-ms-sports al registrar el check-in. Puede pedirla el propio
+    atleta (QR) o quien gestiona el evento; si el modo competencia está
+    apagado responde `registrado: false` y no es un error.
+    """
+    try:
+        ctx = await resolver_contexto(authorization, None, require_auth=True)
+        propio = {v for v in (ctx.id, ctx.email) if v}
+        objetivo = {v for v in (body.usuario_id.strip(), (body.email or "").strip()) if v}
+        if not (propio & objetivo) and not ctx.tiene_rol(*ROLES_REGISTRAN_ASISTENCIA):
+            raise HTTPException(
+                status_code=403,
+                detail="Sólo el propio atleta o quien gestiona el evento pueden sumar esa asistencia.",
+            )
+
+        alias = [body.email] if body.email else None
+        return await agent.registrar_evento_asistido(
+            body.usuario_id.strip(),
+            body.evento_id.strip(),
+            evento_nombre=body.evento_nombre,
+            alias=alias,
+        )
+    except CompetenciaAccionError as exc:
+        raise _accion_http(exc) from exc
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/modo-activo")
+@router.get("/modo-activo/{usuario_id}")
+async def modo_competencia_activo(
+    usuario_id: Optional[str] = None,
+    usuarios: Optional[str] = Query(
+        None, description="Ids o correos separados por coma para consultar en lote."
+    ),
+    authorization: Optional[str] = Header(None),
+):
+    """RF53 — sólo dice si el modo competencia está activo, sin armar el plan.
+
+    Lo usan el entrenador (para saber si puede registrar asistencia) y las
+    tarjetas del panel: una lectura de Mongo, sin llamadas a sports ni al LLM.
+    """
+    try:
+        ctx = await resolver_contexto(authorization, None, require_auth=True)
+        pedidos = [p.strip() for p in (usuarios or "").split(",") if p.strip()]
+        if usuario_id:
+            pedidos.append(usuario_id.strip())
+        if not pedidos:
+            pedidos = [ctx.id]
+        if not ctx.tiene_rol("ADMIN", "ENTRENADOR"):
+            propios = {ctx.id, ctx.email, "me", "yo"}
+            pedidos = [p for p in pedidos if p in propios] or [ctx.id]
+
+        estado = await agent.modos_activos(list(dict.fromkeys(pedidos)))
+        return {
+            "rf": "RF53",
+            "usuarios": estado,
+            "activo": bool(estado.get(usuario_id.strip())) if usuario_id else any(estado.values()),
+        }
     except HTTPException:
         raise
     except Exception as e:

@@ -2,7 +2,7 @@
 
 Las preguntas se guardan con las opciones en una lista y el índice de la
 correcta. El agente baraja preguntas y opciones en cada generación, de forma que
-dos quices del mismo rol nunca salen iguales aunque no haya LLM disponible.
+dos quices del mismo rol nunca salen iguales. La generación no espera al LLM.
 
 Temas: eventos | cupos | roles | inclusion | verificacion | adaptaciones |
 catalogo | asistencia | seguridad

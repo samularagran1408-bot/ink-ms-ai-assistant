@@ -4,6 +4,7 @@ Filtra eventos al cruce deporte–discapacidad del perfil y gestiona el plan
 de preparación (checklist + sesiones de rutina).
 """
 
+import asyncio
 import json
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -20,7 +21,6 @@ from app.agents.competencia_progreso import (
 from app.database.mongodb import get_db
 from app.nlp.discapacidad import canonizar, coincide, descripcion
 from app.nlp.texto import normalizar
-from app.services.llm_service import LLMService
 from app.services.sports_service import SportsService
 from app.services.user_service import UserService
 
@@ -71,8 +71,7 @@ class CompetenciaAgent:
     """
 
     def __init__(self):
-        """Inicializa LLM, users y sports."""
-        self.llm = LLMService()
+        """Inicializa users y sports."""
         self.user_service = UserService()
         self.sports_service = SportsService()
 
@@ -93,6 +92,18 @@ class CompetenciaAgent:
         Usa GET /api/sports/active (disabilities anidadas) y /api/sport-disabilities/sport/{id}.
         """
         deportes = await self.sports_service.get_deportes_activos(authorization)
+        ids = [d.get("id") for d in deportes if d.get("id") is not None]
+        ads_list = (
+            await asyncio.gather(
+                *[
+                    self.sports_service.get_adaptaciones_deporte(sid, authorization)
+                    for sid in ids
+                ]
+            )
+            if ids
+            else []
+        )
+        ads_por_id = dict(zip(ids, ads_list))
         compatibles: set = set()
         adaptaciones_por_sport: dict = {}
 
@@ -113,7 +124,7 @@ class CompetenciaAgent:
                 if isinstance(d, dict)
             )
 
-            ads = await self.sports_service.get_adaptaciones_deporte(sid, authorization)
+            ads = ads_por_id.get(sid) or []
             ads_match = [
                 a for a in ads
                 if self._discapacidad_coincide(
@@ -297,8 +308,8 @@ class CompetenciaAgent:
         """RF53 — analiza el panorama competitivo del atleta autenticado.
 
         Cruza eventos con deportes que tienen adaptación a su discapacidad,
-        calcula estadísticas de cupos/asistencias y pide al LLM (o al heurístico)
-        ventajas, desventajas y recomendaciones concretas.
+        calcula estadísticas de cupos/asistencias y arma ventajas, desventajas
+        y recomendaciones con el heurístico local (sin esperar al LLM).
         """
         user_data = await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad = user_data.get("disability") or "general"
@@ -428,25 +439,6 @@ class CompetenciaAgent:
         }
         progreso_panel = progreso_desde_inscripciones(inscritos, rutinas)
 
-        prompt = f"""
-Analiza el panorama competitivo inclusivo.
-- Nombre: {nombre}
-- Discapacidad del perfil: {discapacidad}
-- Estadísticas: {json.dumps(estadisticas, ensure_ascii=False)}
-- Eventos compatibles (deporte con adaptación a su discapacidad): {json.dumps(resumen_eventos[:20], ensure_ascii=False, default=str)}
-
-Ventajas, desventajas y recomendaciones concretas (usa nombres reales de eventos/deportes).
-SOLO JSON:
-{{"ventajas":["..."],"desventajas":["..."],"recomendaciones":["..."]}}
-"""
-
-        ventajas, desventajas, recomendaciones = [], [], []
-        analisis = await self.llm.json_dict(prompt, canonizar(discapacidad))
-        if analisis:
-            ventajas = analisis.get("ventajas") or []
-            desventajas = analisis.get("desventajas") or []
-            recomendaciones = analisis.get("recomendaciones") or []
-
         heuristico = self._analisis_heuristico(
             discapacidad=discapacidad,
             deportes_compatibles=deportes_compatibles,
@@ -459,9 +451,9 @@ SOLO JSON:
             perfil=user_data,
             progreso_panel=progreso_panel,
         )
-        ventajas = ventajas or heuristico["ventajas"]
-        desventajas = desventajas or heuristico["desventajas"]
-        recomendaciones = recomendaciones or heuristico["recomendaciones"]
+        ventajas = heuristico["ventajas"]
+        desventajas = heuristico["desventajas"]
+        recomendaciones = heuristico["recomendaciones"]
 
         payload = {
             "estadisticas": estadisticas,
@@ -969,8 +961,10 @@ SOLO JSON:
         self, usuario_id: str, authorization: Optional[str] = None
     ) -> dict[str, Any]:
         """Estado persistido del modo competencia + progreso del panel principal."""
-        doc = await self._leer_modo(usuario_id)
-        progreso, rutinas = await self._panel_y_rutinas(usuario_id, authorization)
+        doc, (progreso, rutinas) = await asyncio.gather(
+            self._leer_modo(usuario_id),
+            self._panel_y_rutinas(usuario_id, authorization),
+        )
         inscritos_rutina = rutinas_inscritas_vista(rutinas)
         activo = bool(doc.get("activo"))
         plan = doc.get("plan") if activo else {}
@@ -1095,25 +1089,128 @@ SOLO JSON:
         await self._guardar_modo(usuario_id, doc)
         return await self.obtener_modo(usuario_id, authorization)
 
+    async def registrar_evento_asistido(
+        self,
+        usuario_id: str,
+        evento_id: str,
+        *,
+        evento_nombre: Optional[str] = None,
+        alias: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Suma al plan la asistencia confirmada a un evento (RF53).
+
+        La llama ink-ms-sports en cuanto se registra el check-in. Cuenta como una
+        sesión del plan, una sola vez por evento, y sólo si el modo competencia
+        está activo: si no lo está no hay plan que avanzar y no es un error.
+        """
+        eid = str(evento_id or "").strip()
+        if not eid:
+            raise CompetenciaAccionError(400, "Indica el evento de la asistencia.")
+
+        doc = await self._leer_modo(usuario_id, alias=alias)
+        if not doc.get("activo"):
+            return {
+                "rf": "RF53",
+                "registrado": False,
+                "motivo": "El atleta no tiene el modo competencia activo.",
+            }
+
+        clave_doc = str(doc.get("usuario_id") or usuario_id)
+        sesiones = sesiones_hechas_doc(doc)
+        if any(str(s.get("evento_id") or "") == eid for s in sesiones):
+            progreso = progreso_plan_desde_doc(doc)
+            return {
+                "rf": "RF53",
+                "registrado": False,
+                "motivo": "La asistencia a este evento ya sumaba en el plan.",
+                "plan_pct": progreso.get("plan_pct"),
+                "sesiones_hechas": progreso.get("sesiones_hechas"),
+                "sesiones_objetivo": progreso.get("sesiones_objetivo"),
+            }
+
+        sesiones.append(
+            {
+                "id": str(uuid4()),
+                "evento_id": eid,
+                "routine_name": str(evento_nombre or "").strip() or "Evento",
+                "origen": "evento",
+                "fecha": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        doc["sesiones_hechas"] = sesiones
+        doc["actualizado"] = datetime.now(timezone.utc).isoformat()
+        await self._guardar_modo(clave_doc, doc)
+
+        progreso = progreso_plan_desde_doc(doc)
+        return {
+            "rf": "RF53",
+            "registrado": True,
+            "evento_id": eid,
+            "plan_pct": progreso.get("plan_pct"),
+            "sesiones_hechas": progreso.get("sesiones_hechas"),
+            "sesiones_objetivo": progreso.get("sesiones_objetivo"),
+            "semana_actual": progreso.get("semana_actual"),
+        }
+
+    async def modos_activos(self, usuario_ids: list[str]) -> dict[str, bool]:
+        """Dice, en una sola lectura de Mongo, quién tiene el modo competencia activo.
+
+        Pensado para comprobaciones rápidas (asistencia del entrenador, tarjetas
+        del panel): no toca sports ni el LLM, así que responde en milisegundos.
+        """
+        claves = [str(u).strip() for u in (usuario_ids or []) if str(u or "").strip()]
+        estado = {clave: False for clave in claves}
+        if not claves:
+            return estado
+        db = get_db()
+        if db is None:
+            return estado
+        try:
+            cursor = db[COL_MODO_COMPETENCIA].find(
+                {"$or": [{"usuario_id": {"$in": claves}}, {"email": {"$in": claves}}]},
+                {"_id": 0, "usuario_id": 1, "email": 1, "activo": 1},
+            )
+            documentos = await cursor.to_list(length=len(claves) * 2 or 1)
+        except Exception as exc:
+            print(f"Error leyendo modo competencia: {exc}")
+            return estado
+
+        for doc in documentos:
+            activo = bool(doc.get("activo"))
+            for campo in ("usuario_id", "email"):
+                valor = str(doc.get(campo) or "").strip()
+                if valor in estado:
+                    estado[valor] = estado[valor] or activo
+        return estado
+
     async def _panel_y_rutinas(
         self, usuario_id: str, authorization: Optional[str] = None
     ) -> tuple[dict[str, Any], list]:
         """Cifras de progreso del panel (asistencia/rutinas) y listado de rutinas inscritas."""
-        inscritos = await self.sports_service.get_eventos_usuario(usuario_id, authorization)
-        rutinas = await self.sports_service.get_rutinas_usuario(usuario_id, authorization)
+        inscritos, rutinas = await asyncio.gather(
+            self.sports_service.get_eventos_usuario(usuario_id, authorization),
+            self.sports_service.get_rutinas_usuario(usuario_id, authorization),
+        )
         return progreso_desde_inscripciones(inscritos, rutinas), rutinas or []
 
-    async def _leer_modo(self, usuario_id: str) -> dict[str, Any]:
-        """Carga el documento de modo competencia; `{activo: False}` si no hay persistencia."""
+    async def _leer_modo(
+        self, usuario_id: str, alias: Optional[list[str]] = None
+    ) -> dict[str, Any]:
+        """Carga el documento de modo competencia; `{activo: False}` si no hay persistencia.
+
+        `alias` sirve cuando otro servicio sólo conoce al atleta por id o por
+        correo y el documento puede estar guardado con cualquiera de los dos.
+        """
         db = get_db()
         if db is None:
             return {"usuario_id": usuario_id, "activo": False}
+        claves = [str(v).strip() for v in [usuario_id, *(alias or [])] if str(v or "").strip()]
         try:
             doc = await db[COL_MODO_COMPETENCIA].find_one(
                 {
                     "$or": [
-                        {"usuario_id": usuario_id},
-                        {"email": usuario_id},
+                        {"usuario_id": {"$in": claves}},
+                        {"email": {"$in": claves}},
                     ]
                 },
                 {"_id": 0},

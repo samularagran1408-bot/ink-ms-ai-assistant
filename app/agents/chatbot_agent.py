@@ -1,8 +1,9 @@
 """Agente conversacional profesional de InkluSport.
 
 Orquesta: clasificación local → (opcional) tool-calling LLM → herramientas
-locales (eventos, rutinas…) → síntesis. Sin LLM o sin soporte de tools, el
-motor local responde completo.
+de consulta/investigación (eventos, catálogo, perfil, métricas de plataforma)
+→ síntesis. Rutinas, planes, riesgo, competencia y estadísticas personales
+quedan en sus apartados; el chat no las ejecuta.
 
 El historial se persiste con cupos anti-basura (ver ConversacionService): el
 usuario puede recuperarlo por API; al LLM solo llegan resumen + últimos turnos.
@@ -51,6 +52,14 @@ from app.nlp.entrenamiento_pedido import (
     detectar_comando_entrenamiento,
     extraer_nombre_alta_deporte,
 )
+from app.tools.chat_ambito import (
+    accion_de_otro_apartado,
+    comando_entrenamiento_para_chat,
+    filtrar_definiciones_chat,
+    intencion_de_otro_apartado,
+    mensaje_redirigir_apartado,
+    tool_bloqueada_en_chat,
+)
 from app.nlp.texto import VACIAS, normalizar
 from app.nlp.metricas_pedido import detectar_pedido_metricas
 from app.services.conversacion_service import ConversacionService
@@ -78,19 +87,19 @@ UMBRAL_CANDIDATO = 0.18
 UMBRAL_HERRAMIENTA_LOCAL = 0.55
 # Cortesía: respuesta local corta basta
 _SOCIAL = frozenset({"saludo", "despedida", "agradecimiento"})
-# Intenciones que disparan herramientas con datos reales
+# Intenciones que disparan herramientas de consulta/investigación (no rutinas/riesgo/stats).
 _CON_HERRAMIENTA = frozenset({
-    "rutinas", "ejercicios", "eventos", "inscripcion", "deportes",
-    "discapacidades", "adaptaciones", "quiz", "progreso", "cuenta",
-    "crear_evento", "crear_deporte", "crear_rutina",
+    "eventos", "inscripcion", "deportes",
+    "discapacidades", "adaptaciones", "quiz", "cuenta",
+    "crear_evento", "crear_deporte",
     "bloquear_usuario", "cancelar_inscripcion",
-    "exportar_pdf", "listar_usuarios", "lesiones",
+    "exportar_pdf", "listar_usuarios",
 })
 # Altas / bajas: no las manda el chat abierto aunque la confianza sea justa.
 _ESCRITURAS_LOCALES = frozenset({
-    "crear_evento", "crear_deporte", "crear_rutina",
+    "crear_evento", "crear_deporte",
     "bloquear_usuario", "cancelar_inscripcion",
-    "exportar_pdf", "listar_usuarios", "lesiones",
+    "exportar_pdf", "listar_usuarios",
 })
 
 _ESTADOS_UI = {
@@ -216,14 +225,19 @@ class _EmisorEventos:
 
 
 _SISTEMA_TOOLS = (
-    "Puedes usar herramientas para obtener o cambiar datos reales de InkluSport "
-    "(eventos, deportes, adaptaciones, inscripciones, discapacidades, usuarios, "
-    "roles y reportes PDF). "
+    "Este chat es solo de consulta e investigación. "
+    "Puedes usar herramientas de catálogo y plataforma (eventos, deportes, "
+    "adaptaciones, inscripciones, discapacidades, perfil, usuarios, roles "
+    "y reportes PDF de investigación). "
+    "NO uses ni simules tools de rutinas, ejercicios, planes de entrenamiento, "
+    "riesgo/lesiones, modo competencia ni estadísticas personales: esos "
+    "módulos tienen su propio apartado. Si el usuario lo pide, oríéntalo "
+    "en texto y dile que lo gestione allí. "
     "El usuario YA está autenticado: NUNCA pidas su email, correo ni ID. "
     "Para su perfil llama consultar_mi_perfil o consultar_usuario con 'me'. "
     "Para inscripciones no hace falta user_id. "
-    "Si un admin pregunta por otra persona, busca por nombre con buscar_usuarios "
-    "y luego estadisticas_usuario; no pidas identificadores. "
+    "Si un admin pregunta por otra persona, busca por nombre con buscar_usuarios; "
+    "no pidas identificadores ni llames estadisticas_usuario. "
     "ADMIN: sí puedes bloquear, desactivar, activar y eliminar usuarios, "
     "asignar o reemplazar roles, gestionar deportes/discapacidades/adaptaciones "
     "y exportar PDF. "
@@ -231,12 +245,10 @@ _SISTEMA_TOOLS = (
     "y no mezcles cuentas activas. Si piden activos, solo_activos=true. "
     "Si piden exportar o descargar PDF (dashboard, reportes o audit logs), "
     "usa exportar_pdf_dashboard o exportar_pdf_auditoria. "
-    "Nunca digas que no tienes herramienta para eso ni redirijas al panel "
-    "ni a soporte técnico. "
     "Organizador: si pide ideas o crear un evento, usa recomendar_evento_nuevo "
     "y ofrece crearlo con crear_evento. También puedes exportar el dashboard a PDF. "
-    "Entrenador: si pide un deporte o rutina nueva, usa recomendar_deporte_nuevo "
-    "o recomendar_rutina_nueva y ofrece crearlo en la plataforma. "
+    "Entrenador: si pide un deporte nuevo, usa recomendar_deporte_nuevo "
+    "y ofrece crearlo en la plataforma. Las rutinas se crean en el apartado de rutinas. "
     "Las escrituras requieren que el usuario confirme; tú solo pide la tool. "
     "Cuando ya tengas los datos, responde en español, claro y aireado: "
     "un dato o ítem por línea, viñetas con '- ' si hay lista, y una línea "
@@ -284,7 +296,9 @@ class ChatbotAgent:
                 roles=roles or [], perfil=perfil,
             )
 
-        comando = detectar_comando_entrenamiento(mensaje)
+        comando = comando_entrenamiento_para_chat(
+            detectar_comando_entrenamiento(mensaje)
+        )
         if comando:
             if eventos is not None:
                 eventos.append(
@@ -387,8 +401,8 @@ class ChatbotAgent:
         # 4) Resto (FAQ, dudas, desconocido): chatbot LLM con contexto
         borrador = None
         sugerencias = [
-            "¿Quieres que te prepare una rutina adaptada?",
             "Puedo mostrarte los eventos compatibles con tu perfil",
+            "Pregúntame por deportes o adaptaciones",
         ]
         if intencion and self._intencion_local_firme(clasificacion):
             local = await self._responder_conocido(
@@ -496,8 +510,6 @@ class ChatbotAgent:
         resultado["agente"] = resultado.get("agente") or "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
         resultado["historial_con_resumen"] = bool(resumen)
-        resultado = self._adjuntar_cuerpo(resultado, mensaje, limitacion)
-
         await self.conversaciones.guardar_turno(
             usuario_id, conversacion_id, mensaje, resultado
         )
@@ -641,8 +653,6 @@ class ChatbotAgent:
         resultado["agente"] = resultado.get("agente") or "inklusport-profesional"
         resultado["historial_turnos_contexto"] = len(historial) // 2
         resultado["historial_con_resumen"] = bool(resumen)
-        resultado = self._adjuntar_cuerpo(resultado, mensaje, limitacion)
-
         await self.conversaciones.guardar_turno(
             usuario_id, conversacion_id, mensaje, resultado
         )
@@ -977,20 +987,20 @@ class ChatbotAgent:
         """Solo si OpenRouter no contestó: no recicla palabras del usuario."""
         if discapacidad in ("cognitiva", "intelectual"):
             return (
-                "Puedo ayudarte ahora. Elige: 1) rutina, 2) eventos, "
-                "3) adaptaciones, 4) otra pregunta. Escribe el número o la pregunta."
+                "Puedo ayudarte ahora. Elige: 1) eventos, "
+                "2) adaptaciones, 3) otra pregunta. Escribe el número o la pregunta."
             )
         error = (LLMService._ultimo_error or "").lower()
         if "free-models-per-day" in error or "insufficient" in error or "402" in error:
             return (
                 "Hoy no pude usar el modelo de chat (cupo gratuito agotado o sin créditos). "
-                "Las rutinas, eventos y adaptaciones de InkluSport siguen disponibles. "
+                "Eventos, deportes y adaptaciones de InkluSport siguen disponibles. "
                 "Cuando el proveedor tenga cupo, te contesto también las preguntas generales."
             )
         return (
             "Ahora mismo no pude completar esa respuesta con el modelo. "
-            "Prueba de nuevo en unos segundos. Si quieres, mientras tanto te armo "
-            "una rutina, te listo eventos o te explico adaptaciones."
+            "Prueba de nuevo en unos segundos. Si quieres, mientras tanto te listo "
+            "eventos o te explico adaptaciones."
         )
 
     async def _definiciones_tools(
@@ -1004,7 +1014,7 @@ class ChatbotAgent:
             if (t.get("function") or {}).get("name") in TOOLS_LOCALES
         ]
         combinadas = (mcp_tools + locales) if mcp_tools else list(TOOL_DEFINITIONS)
-        return filtrar_definiciones(combinadas, roles)
+        return filtrar_definiciones_chat(filtrar_definiciones(combinadas, roles))
 
     async def _ejecutar_herramienta(
         self,
@@ -1018,6 +1028,11 @@ class ChatbotAgent:
         perfil: Optional[dict[str, Any]] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Despacha una tool: permiso de rol, ejecución local o llamada MCP, con fallback."""
+        if tool_bloqueada_en_chat(nombre):
+            return (
+                mensaje_redirigir_apartado(nombre),
+                {"success": False, "error": "tool_fuera_del_chat", "tool": nombre},
+            )
         if nombre not in nombres_permitidos(roles):
             return (
                 f"No tienes permiso para la herramienta {nombre}.",
@@ -1205,15 +1220,16 @@ class ChatbotAgent:
         datos: dict[str, Any] = {}
         # El mapa local gana a Mongo: un seed viejo dejó progreso→eventos.
         accion = {
-            "progreso": "estadisticas",
             "cuenta": "perfil",
             "crear_evento": "propuesta_evento",
             "crear_deporte": "propuesta_deporte",
-            "crear_rutina": "propuesta_rutina",
             "bloquear_usuario": "propuesta_bloqueo",
             "cancelar_inscripcion": "propuesta_cancelar_inscripcion",
-            "lesiones": "cuerpo",
         }.get(intencion) or conocimiento.get("accion")
+        if intencion_de_otro_apartado(intencion) or accion_de_otro_apartado(accion):
+            extra = mensaje_redirigir_apartado(intencion)
+            texto = f"{texto}\n\n{extra}".strip() if texto else extra
+            accion = None
         if accion:
             complemento, datos = await self._enriquecer(
                 accion, usuario_id, discapacidad, authorization, mensaje,
@@ -1349,9 +1365,9 @@ class ChatbotAgent:
             return conversacional
 
         sugerencias = [
-            "Pídeme una rutina indicando tu objetivo",
             "Pregúntame qué eventos hay disponibles",
             "Consúltame las adaptaciones de un deporte",
+            "Pregúntame por deportes de la plataforma",
         ]
         return {
             "respuesta": self._respuesta_abierta_sin_llm(mensaje, discapacidad),

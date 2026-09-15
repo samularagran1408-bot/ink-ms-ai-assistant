@@ -1,7 +1,13 @@
 """Cliente de ink-ms-auth para validar JWT de sesión."""
 
-import httpx
 from app.config import settings
+from app.services.http_client import get_json
+from app.utils.cache import CacheTTL, clave_token
+
+# El mismo token se valida varias veces por pantalla; 30 s evita repetir el salto
+# sin que un cierre de sesión tarde en notarse.
+_VALIDACIONES = CacheTTL(30.0)
+
 
 class AuthService:
     """Valida tokens JWT contra el microservicio de autenticación."""
@@ -16,6 +22,7 @@ class AuthService:
         Llama ``GET /api/auth/validate`` con ``Authorization: Bearer``.
         Devuelve el payload del usuario (id, roles, etc.) si el token es
         válido (HTTP 200), o ``None`` si falta, está vacío o el servicio falla.
+        El resultado se cachea unos segundos por token.
         """
         if not token:
             return None
@@ -27,15 +34,16 @@ class AuthService:
         if not token:
             return None
 
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    self.auth_url,
-                    headers={"Authorization": f"Bearer {token}"}
-                )
-                if response.status_code == 200:
-                    return response.json()
-                return None
-        except Exception as e:
-            print(f"Error validando token: {e}")
+        clave = clave_token(token)
+        cacheado = _VALIDACIONES.get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        data = await get_json(
+            self.auth_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=3.0,
+        )
+        if not isinstance(data, dict):
             return None
+        return _VALIDACIONES.set(clave, data)

@@ -248,6 +248,19 @@ def test_barajado_de_opciones_conserva_la_respuesta_correcta():
         assert elegida["texto"] == texto_correcto
 
 
+def test_quiz_se_arma_del_banco_sin_llm():
+    """La generación de aptitud no depende de métodos LLM ni de catálogo extra."""
+    from app.agents.quiz_agent import QuizAgent
+
+    assert not hasattr(QuizAgent, "_preguntas_llm")
+    assert not hasattr(QuizAgent, "_contexto_catalogo")
+    agent = QuizAgent()
+    assert not hasattr(agent, "llm")
+    azar = random.Random(3)
+    preguntas = agent._muestrear(BANCOS["ENTRENADOR"], 8, "media", azar)
+    assert len(preguntas) == 8
+
+
 def _ejecutar_todo() -> int:
     """Corre todas las test_* de este módulo y devuelve 1 si alguna falla."""
     pruebas = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

@@ -5,12 +5,20 @@ código lleva la misma información como respaldo: si Mongo no está disponible 
 una colección está vacía, el servicio sigue funcionando igual.
 """
 
+from __future__ import annotations
+
+import asyncio
+import time
 from typing import Any, Optional
 
 from app.data.conocimiento import CONOCIMIENTO
 from app.data.ejercicios import CATALOGO_EJERCICIOS
 from app.data.quiz_banco import BANCOS
 from app.database.mongodb import get_db
+
+_TTL_SEGUNDOS = 45.0
+_catalogo_cache: tuple[float, list[dict[str, Any]]] | None = None
+_banco_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 COL_EJERCICIOS = "catalogo_ejercicios"
 COL_CONOCIMIENTO = "conocimiento_chatbot"
@@ -40,12 +48,29 @@ async def _leer(coleccion: str, filtro: dict, limite: int = 500) -> list[dict[st
         return []
 
 
-async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
-    """Catálogo embebido más ejercicios extra de Mongo (ids que no están en código).
+def _programar(coro) -> None:
+    """Lanza un refresco en segundo plano si hay loop; si no, lo omite."""
+    try:
+        asyncio.get_running_loop().create_task(coro)
+    except RuntimeError:
+        return
 
-    El código es la fuente de los ejercicios oficiales (tags y objetivos nuevos
-    llegan sin re-sembrar). Mongo solo aporta piezas personalizadas con otro `id`.
-    """
+
+async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
+    """Catálogo embebido al instante; Mongo solo suma extras en segundo plano."""
+    global _catalogo_cache
+    ahora = time.monotonic()
+    if _catalogo_cache and _catalogo_cache[0] > ahora:
+        return _catalogo_cache[1]
+    local = [dict(e) for e in CATALOGO_EJERCICIOS]
+    _catalogo_cache = (ahora + _TTL_SEGUNDOS, local)
+    _programar(_refrescar_catalogo())
+    return local
+
+
+async def _refrescar_catalogo() -> None:
+    """Mezcla ejercicios extra de Mongo en la caché, sin bloquear al usuario."""
+    global _catalogo_cache
     por_id: dict[str, dict[str, Any]] = {e["id"]: dict(e) for e in CATALOGO_EJERCICIOS}
     documentos = await _leer(COL_EJERCICIOS, {"activo": True})
     for d in documentos:
@@ -55,7 +80,7 @@ async def obtener_catalogo_ejercicios() -> list[dict[str, Any]]:
         if eid in por_id:
             continue
         por_id[str(eid)] = d
-    return list(por_id.values())
+    _catalogo_cache = (time.monotonic() + _TTL_SEGUNDOS, list(por_id.values()))
 
 
 async def obtener_conocimiento(intencion: str) -> Optional[dict[str, Any]]:
@@ -70,6 +95,21 @@ async def obtener_conocimiento(intencion: str) -> Optional[dict[str, Any]]:
 
 
 async def obtener_banco_quiz(rol: str) -> list[dict[str, Any]]:
-    """Preguntas del quiz para un rol (ORGANIZADOR/ENTRENADOR); si Mongo está vacío, el banco local."""
+    """Banco local al instante; Mongo solo refresca la caché en segundo plano."""
+    ahora = time.monotonic()
+    hit = _banco_cache.get(rol)
+    if hit and hit[0] > ahora:
+        return hit[1]
+    local = list(BANCOS.get(rol, []))
+    _banco_cache[rol] = (ahora + _TTL_SEGUNDOS, local)
+    _programar(_refrescar_banco(rol))
+    return local
+
+
+async def _refrescar_banco(rol: str) -> None:
+    """Sustituye la caché del quiz si Mongo trae preguntas activas."""
     documentos = await _leer(COL_QUIZ, {"rol": rol, "activo": True})
-    return documentos or BANCOS.get(rol, [])
+    _banco_cache[rol] = (
+        time.monotonic() + _TTL_SEGUNDOS,
+        documentos or list(BANCOS.get(rol, [])),
+    )

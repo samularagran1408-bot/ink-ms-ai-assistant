@@ -16,6 +16,7 @@ import asyncio
 import json
 import re
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -263,10 +264,47 @@ def _unir_continuacion(base: str, extra: str) -> str:
     return f"{a} {b}"
 
 
-async def _esperar_reintento(intento: int) -> None:
-    """Backoff corto (0.4s, 0.8s, … tope 2s) para no inflar la espera del usuario."""
-    espera = min(2.0, 0.4 * (2 ** max(0, intento)))
-    await asyncio.sleep(espera)
+# Presupuesto de LLM de la petición en curso: un turno de chat puede llamar al
+# modelo varias veces (síntesis, cierre, alternativa) y entre todas no deben
+# pasarse del tiempo prometido al usuario.
+_limite_peticion: ContextVar[Optional[float]] = ContextVar("llm_limite_peticion", default=None)
+
+
+def abrir_presupuesto(segundos: float) -> None:
+    """Marca el instante en que la petición deja de esperar al modelo."""
+    _limite_peticion.set(time.monotonic() + max(0.5, float(segundos)))
+
+
+def _limite_efectivo(segundos_propios: float) -> float:
+    """Ventana real para el modelo en esta llamada.
+
+    Manda el presupuesto que abrió la petición: es el que sabe si esto es un
+    chat (se espera texto del modelo) o una acción de la plataforma (tope corto).
+    El valor propio sólo se usa cuando nadie abrió presupuesto.
+    """
+    peticion = _limite_peticion.get()
+    if peticion is not None:
+        return peticion
+    return time.monotonic() + max(1.0, float(segundos_propios))
+
+
+def _timeout_intento(timeout_base: float, restante: float) -> float:
+    """Cuánto esperar a un intento concreto del modelo.
+
+    LLM_TIMEOUT es el mínimo, no el techo: si la petición tiene una ventana
+    amplia, cortar el intento a 2 s la desperdicia y ningún modelo real termina.
+    Se deja parte de la ventana libre por si hay que probar otro modelo.
+    """
+    if restante == float("inf"):
+        return float(timeout_base)
+    return max(0.5, min(restante, max(float(timeout_base), restante * 0.65)))
+
+
+async def _esperar_reintento(intento: int, restante: float = float("inf")) -> None:
+    """Backoff corto (0.4s, 0.8s, … tope 2s) que nunca se come el presupuesto."""
+    espera = min(2.0, 0.4 * (2 ** max(0, intento)), max(0.0, restante - 0.6))
+    if espera > 0:
+        await asyncio.sleep(espera)
 
 
 class LLMService:
@@ -487,7 +525,15 @@ class LLMService:
         modelos = self._modelos_a_probar()
         usar_tools = bool(tools)
         sema = self._semaforo()
-        espera = max(0.5, float(settings.LLM_QUEUE_WAIT_SEGUNDOS))
+        # Presupuesto único para cola + intentos: pasado ese punto se responde
+        # con el motor local en vez de hacer esperar al usuario.
+        limite = _limite_efectivo(settings.LLM_PRESUPUESTO_SEGUNDOS)
+        if limite - time.monotonic() < 0.6:
+            raise RuntimeError("LLM sin tiempo en el presupuesto de la petición")
+        espera = min(
+            max(0.5, float(settings.LLM_QUEUE_WAIT_SEGUNDOS)),
+            max(0.5, limite - time.monotonic()),
+        )
         try:
             await asyncio.wait_for(sema.acquire(), timeout=espera)
         except TimeoutError as exc:
@@ -496,16 +542,23 @@ class LLMService:
             ) from exc
         LLMService._en_curso += 1
         try:
-            return await self._completar_http(
-                mensajes,
-                headers,
-                modelos,
-                usar_tools,
-                tools,
-                tool_choice,
-                self._temperatura(temperatura),
-                max_tokens,
+            return await asyncio.wait_for(
+                self._completar_http(
+                    mensajes,
+                    headers,
+                    modelos,
+                    usar_tools,
+                    tools,
+                    tool_choice,
+                    self._temperatura(temperatura),
+                    max_tokens,
+                    limite,
+                ),
+                timeout=max(0.5, limite - time.monotonic()),
             )
+        except TimeoutError as exc:
+            self._registrar_fallo("presupuesto de tiempo agotado", transitorio=True)
+            raise RuntimeError("LLM tardó más del presupuesto de la petición") from exc
         finally:
             LLMService._en_curso = max(0, LLMService._en_curso - 1)
             sema.release()
@@ -520,16 +573,29 @@ class LLMService:
         tool_choice: Optional[str],
         temperatura: float,
         max_tokens: Optional[int],
+        limite: Optional[float] = None,
     ) -> ChatCompletionResult:
-        """POST al proveedor. El llamador ya tiene el cupo del semáforo."""
+        """POST al proveedor. El llamador ya tiene el cupo del semáforo.
+
+        ``limite`` es el instante (``time.monotonic``) en el que hay que rendirse:
+        no se empieza un intento que no quepa en lo que queda.
+        """
         ultimo_error = ""
         transitorio = True
         tokens = max_tokens or settings.LLM_MAX_TOKENS
         reintentos = max(0, settings.LLM_REINTENTOS_POR_MODELO)
+
+        def restante() -> float:
+            """Segundos que quedan de presupuesto (infinito si no hay límite)."""
+            return float("inf") if limite is None else limite - time.monotonic()
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             for i, modelo in enumerate(modelos):
                 if _es_modelo_free(modelo) and time.time() < LLMService._free_cuota_hasta:
                     continue
+                if restante() < 0.6:
+                    ultimo_error = ultimo_error or "sin tiempo para más modelos"
+                    break
                 hay_mas = any(
                     m != modelo
                     and not (
@@ -548,9 +614,15 @@ class LLMService:
                     payload["tool_choice"] = tool_choice or "auto"
 
                 for intento in range(reintentos + 1):
+                    if restante() < 0.6:
+                        ultimo_error = ultimo_error or "sin tiempo para reintentar"
+                        break
                     try:
                         respuesta = await client.post(
-                            self.api_url, headers=headers, json=payload
+                            self.api_url,
+                            headers=headers,
+                            json=payload,
+                            timeout=_timeout_intento(self.timeout, restante()),
                         )
                     except Exception as exc:
                         ultimo_error = f"{type(exc).__name__}: {exc}"
@@ -560,7 +632,7 @@ class LLMService:
                                 f"LLM {modelo} {ultimo_error[:80]}; "
                                 f"reintento {intento + 1}/{reintentos}..."
                             )
-                            await _esperar_reintento(intento)
+                            await _esperar_reintento(intento, restante())
                             continue
                         if _es_error_red(exc) and hay_mas:
                             print(
@@ -587,14 +659,15 @@ class LLMService:
                         if not (resultado.content or "").strip() and not resultado.tiene_tools:
                             ultimo_error = f"{modelo}: respuesta vacía"
                             if intento < reintentos:
-                                await _esperar_reintento(intento)
+                                await _esperar_reintento(intento, restante())
                                 continue
                             if hay_mas:
                                 print(f"LLM {ultimo_error}; probando alternativa...")
                                 break
                             self._registrar_fallo(ultimo_error, transitorio=True)
                             raise RuntimeError(f"LLM {ultimo_error}")
-                        if resultado.truncado and not resultado.tiene_tools:
+                        # Pedir la continuación es otra ronda HTTP: solo si cabe.
+                        if resultado.truncado and not resultado.tiene_tools and restante() > 1.5:
                             resultado = await self._continuar_si_truncado(
                                 client, headers, payload, resultado
                             )
@@ -631,7 +704,7 @@ class LLMService:
                             f"LLM {modelo} {ultimo_error[:80]}; "
                             f"reintento {intento + 1}/{reintentos}..."
                         )
-                        await _esperar_reintento(intento)
+                        await _esperar_reintento(intento, restante())
                         continue
                     if (
                         _es_modelo_reintentable(respuesta.status_code, detalle)

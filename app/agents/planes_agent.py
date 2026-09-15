@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from app.data.ejercicios import CATALOGO_EJERCICIOS
 from app.database.mongodb import get_db
 from app.database.repositorio import COL_PLANES, obtener_catalogo_ejercicios
 from app.motor.rutinas import generar_rutina, interpretar_objetivo
 from app.nlp.discapacidad import canonizar
-from app.services.llm_service import LLMService
 from app.services.user_service import UserService
 
 NIVELES = ("principiante", "intermedio", "avanzado")
@@ -38,9 +39,8 @@ class PlanesAgent:
     """Arma planes multi-sesión con progresión semanal y los persiste (RF44)."""
 
     def __init__(self):
-        """Inicializa clientes de users y LLM (el LLM solo redacta el resumen)."""
+        """Inicializa el cliente de users (el catálogo arma las sesiones)."""
         self.user_service = UserService()
-        self.llm = LLMService()
 
     async def generar_plan(
         self,
@@ -57,19 +57,24 @@ class PlanesAgent:
         """Genera un plan de 1–8 semanas con sesiones variadas según el objetivo.
 
         Sube el nivel a mitad de plan si hay margen, rota el enfoque diario afín
-        al objetivo y guarda el resultado en Mongo. El LLM, si está disponible,
-        redacta un resumen de dos frases; nunca elige los ejercicios.
+        al objetivo y guarda el resultado en Mongo. El resumen es local: no espera al LLM.
         """
         semanas = max(1, min(semanas, 8))
         sesiones_por_semana = max(2, min(sesiones_por_semana, 5))
 
-        perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
-        discapacidad_final = canonizar(discapacidad or perfil.get("disability") or "general")
+        if perfil:
+            catalogo = await self._catalogo_rapido()
+        else:
+            perfil, catalogo = await asyncio.gather(
+                self._perfil_rapido(usuario_id, authorization),
+                self._catalogo_rapido(),
+            )
+        discapacidad_final = canonizar(discapacidad or (perfil or {}).get("disability") or "general")
         nivel_base = nivel or "principiante"
         if nivel_base not in NIVELES:
             nivel_base = "principiante"
-        nombre = perfil.get("fullName") or "Usuario"
-        catalogo = await obtener_catalogo_ejercicios()
+        nombre = (perfil or {}).get("fullName") or "Usuario"
+        catalogo = catalogo or CATALOGO_EJERCICIOS
 
         sesiones: list[dict[str, Any]] = []
         idx_nivel = NIVELES.index(nivel_base)
@@ -153,7 +158,7 @@ class PlanesAgent:
         plan = {
             "plan_id": plan_id,
             "usuario": {
-                "id": perfil.get("id") or usuario_id,
+                "id": (perfil or {}).get("id") or usuario_id,
                 "fullName": nombre,
                 "disability": discapacidad_final,
             },
@@ -171,8 +176,8 @@ class PlanesAgent:
             "fuente": "motor_local",
             "rf": "RF44",
         }
-        plan["resumen"] = await self._resumen(plan, nombre)
-        await self._guardar(plan)
+        plan["resumen"] = self._resumen(plan, nombre)
+        await self._guardar(plan, bloquear=False)
         return plan
 
     async def obtener_plan(self, plan_id: str) -> Optional[dict[str, Any]]:
@@ -199,24 +204,46 @@ class PlanesAgent:
             print(f"No se pudieron listar planes: {exc}")
             return []
 
-    async def _resumen(self, plan: dict, nombre: str) -> str:
-        """Redacta un resumen corto del plan; usa LLM si está disponible."""
-        base = (
+    def _resumen(self, plan: dict, nombre: str) -> str:
+        """Resumen local del plan (sin round-trip al LLM)."""
+        return (
             f"{nombre}, tu plan de {plan['semanas']} semanas incluye "
-            f"{plan['total_sesiones']} sesiones orientadas a {plan['objetivo']}."
+            f"{plan['total_sesiones']} sesiones orientadas a {plan['objetivo']}. "
+            f"{plan['sesiones_por_semana']} días por semana, con progresión a mitad del ciclo."
         )
-        if not self.llm.disponible:
-            return base
-        prompt = (
-            f"Resume en 2 frases un plan de entrenamiento inclusivo para {nombre}: "
-            f"{plan['semanas']} semanas, {plan['sesiones_por_semana']} sesiones/semana, "
-            f"objetivo {plan['objetivo']}, discapacidad {plan['usuario']['disability']}. "
-            "Habla de ESE objetivo (si pidió reflejos, no hables de fuerza). "
-            "Sin Markdown."
-        )
-        return await self.llm.texto(prompt, plan["usuario"]["disability"]) or base
 
-    async def _guardar(self, plan: dict) -> None:
+    async def _perfil_rapido(
+        self, usuario_id: str, authorization: Optional[str]
+    ) -> dict[str, Any]:
+        """Perfil de users con tope corto; si no llega, el plan se arma igual."""
+        try:
+            return await asyncio.wait_for(
+                self.user_service.get_user_profile(usuario_id, authorization),
+                timeout=2.0,
+            ) or {}
+        except Exception:
+            return {"id": usuario_id}
+
+    async def _catalogo_rapido(self) -> list[dict[str, Any]]:
+        """Catálogo local (caché); no espera a Mongo."""
+        try:
+            return await asyncio.wait_for(obtener_catalogo_ejercicios(), timeout=0.8) or list(
+                CATALOGO_EJERCICIOS
+            )
+        except Exception:
+            return list(CATALOGO_EJERCICIOS)
+
+    async def _guardar(self, plan: dict, bloquear: bool = True) -> None:
+        """Inserta el plan en Mongo; por defecto no retrasa la respuesta."""
+        if bloquear:
+            await self._persistir_plan(plan)
+            return
+        try:
+            asyncio.get_running_loop().create_task(self._persistir_plan(plan))
+        except RuntimeError:
+            await self._persistir_plan(plan)
+
+    async def _persistir_plan(self, plan: dict) -> None:
         """Inserta el plan en Mongo; ignora el fallo si la base no está disponible."""
         db = get_db()
         if db is None:

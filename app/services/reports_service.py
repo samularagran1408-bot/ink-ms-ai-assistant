@@ -2,9 +2,8 @@
 
 from typing import Any, Optional
 
-import httpx
-
 from app.config import settings
+from app.services.http_client import get_json
 
 
 class ReportsService:
@@ -23,18 +22,12 @@ class ReportsService:
 
     async def _get(self, path: str, authorization: Optional[str] = None, params: Optional[dict] = None) -> Any:
         """GET a ``path`` relativo de ink-ms-reports. Devuelve el JSON o ``None`` si falla."""
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                respuesta = await client.get(
-                    f"{self.base_url}{path}",
-                    headers=self._headers(authorization) or None,
-                    params=params,
-                )
-                if respuesta.status_code == 200:
-                    return respuesta.json()
-        except Exception as exc:
-            print(f"Error llamando reports {path}: {exc}")
-        return None
+        return await get_json(
+            f"{self.base_url}{path}",
+            headers=self._headers(authorization),
+            params=params,
+            timeout=4.0,
+        )
 
     async def eventos_usuario(self, authorization: Optional[str] = None) -> list[dict]:
         """Eventos analíticos del usuario autenticado.

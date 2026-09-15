@@ -1,8 +1,8 @@
 """Agente de rutinas.
 
 El catálogo de ejercicios es la fuente autorizada: garantiza ejercicios reales,
-adaptados y con progresión coherente. El LLM, cuando está disponible, solo añade
-una nota personalizada; nunca sustituye la selección de ejercicios.
+adaptados y con progresión coherente. La nota de acompañamiento es local para
+no bloquear la respuesta esperando al LLM.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from typing import Any, Deque, Optional
 from app.database.repositorio import obtener_catalogo_ejercicios
 from app.motor.rutinas import generar_rutina
 from app.nlp.discapacidad import canonizar
-from app.services.llm_service import LLMService
 from app.services.user_service import UserService
 
 # Últimos ids de ejercicios por usuario para no devolver la misma sesión seguida
@@ -25,8 +24,7 @@ class RutinasAgent:
     """Genera sesiones a partir del catálogo de ejercicios adaptados (RF41)."""
 
     def __init__(self):
-        """Inicializa LLM (nota de acompañamiento) y el cliente de users."""
-        self.llm = LLMService()
+        """Inicializa el cliente de users (el catálogo arma la sesión)."""
         self.user_service = UserService()
 
     async def generar_rutina(
@@ -44,8 +42,7 @@ class RutinasAgent:
         """Arma una rutina del catálogo adaptada a discapacidad, objetivo y nivel.
 
         Sin `semilla` varía los ejercicios (evita repetir los 24 últimos del usuario).
-        El LLM, si está disponible, solo añade `nota_personalizada`; nunca elige
-        los ejercicios.
+        `nota_personalizada` es local: no espera al proveedor LLM.
         """
         perfil = perfil or await self.user_service.get_user_profile(usuario_id, authorization)
         discapacidad_final = discapacidad or perfil.get("disability") or "general"
@@ -85,23 +82,15 @@ class RutinasAgent:
         if rutina.get("interpretacion") is not None:
             rutina["interpretacion"]["semilla_efectiva"] = semilla_efectiva
             rutina["interpretacion"]["semilla_cliente"] = semilla
-        rutina["nota_personalizada"] = await self._nota_personalizada(rutina, nombre)
+        rutina["nota_personalizada"] = self._nota_personalizada(rutina, nombre)
         return rutina
 
-    async def _nota_personalizada(self, rutina: dict, nombre: str) -> Optional[str]:
-        """Comentario de acompañamiento generado por el LLM, si está disponible."""
-        if not self.llm.disponible:
-            return None
-
-        listado = ", ".join(e["nombre"] for e in rutina["ejercicios"])
-        pedido = rutina.get("objetivo_pedido") or rutina.get("objetivo")
-        prompt = (
-            f"Escribe en 3 frases una nota de acompañamiento para {nombre}, que va a "
-            f"realizar esta sesión: {listado}. "
-            f"Objetivo que pidió: {pedido}. Etiqueta de la sesión: {rutina['objetivo']}. "
-            f"Nivel: {rutina['nivel']}. No inventes ejercicios distintos a los listados "
-            "ni des cifras de series o repeticiones. Alinea el tono con el objetivo pedido "
-            "(si pidió reflejos o velocidad, no hables de hipertrofia ni de fuerza genérica). "
-            "Varía el tono; no uses siempre las mismas frases de ánimo."
+    def _nota_personalizada(self, rutina: dict, nombre: str) -> str:
+        """Nota de acompañamiento local (sin round-trip al LLM)."""
+        pedido = rutina.get("objetivo_pedido") or rutina.get("objetivo") or "tu objetivo"
+        minutos = rutina.get("duracion_estimada_minutos") or 35
+        nivel = rutina.get("nivel") or "principiante"
+        return (
+            f"{nombre}, sesión de {minutos} min en nivel {nivel}, "
+            f"orientada a {pedido}. Sigue las consignas y detente si aparece dolor."
         )
-        return await self.llm.texto(prompt, rutina["discapacidad"], temperatura=0.85)

@@ -5,6 +5,13 @@ from typing import Any, Optional
 import httpx
 
 from app.config import settings
+from app.services.http_client import get_client, get_json
+from app.utils.cache import CacheTTL, clave_token
+
+# El perfil y los roles cambian poco y se piden en cada endpoint del asistente.
+_PERFILES = CacheTTL(30.0)
+_PERFILES_POR_ID = CacheTTL(30.0)
+_ROLES = CacheTTL(60.0)
 
 
 class UserService:
@@ -26,21 +33,22 @@ class UserService:
 
         Llama ``GET /api/users/perfil`` con el JWT. Devuelve el dict del perfil
         (id, email, etc.) o ``{}`` si falta token o el microservicio falla.
+        Se cachea unos segundos por token.
         """
         if not authorization:
             return {}
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                respuesta = await client.get(
-                    f"{self.base_url}/api/users/perfil",
-                    headers=self._headers(authorization),
-                )
-                if respuesta.status_code == 200:
-                    data = respuesta.json()
-                    if isinstance(data, dict) and (data.get("id") or data.get("email")):
-                        return data
-        except Exception as exc:
-            print(f"Error obteniendo /api/users/perfil: {exc}")
+        clave = clave_token(authorization)
+        cacheado = _PERFILES.get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        data = await get_json(
+            f"{self.base_url}/api/users/perfil",
+            headers=self._headers(authorization),
+            timeout=3.0,
+        )
+        if isinstance(data, dict) and (data.get("id") or data.get("email")):
+            return _PERFILES.set(clave, data)
         return {}
 
     async def get_profile_by_email(
@@ -54,15 +62,13 @@ class UserService:
         """
         if not email:
             return {}
-        roles = await self.get_roles_by_email(email)
-        # Algunos despliegues exponen admin; el interno por id es lo habitual.
-        # Si ya tenemos perfil propio, no hace falta.
         perfil = await self.get_my_profile(authorization)
-        if perfil and str(perfil.get("email", "")).lower() == email.lower():
-            if roles and not perfil.get("roles"):
-                perfil = {**perfil, "roles": roles}
+        if not perfil or str(perfil.get("email", "")).lower() != email.lower():
+            return {}
+        if perfil.get("roles"):
             return perfil
-        return {}
+        roles = await self.get_roles_by_email(email)
+        return {**perfil, "roles": roles} if roles else perfil
 
     async def get_roles_by_email(self, email: str) -> list[str]:
         """Roles asociados a un correo.
@@ -70,18 +76,20 @@ class UserService:
         Llama ``GET /api/internal/users/roles-by-email?email=…`` (sin JWT).
         Devuelve la lista de roles o ``[]`` si el microservicio falla.
         """
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                respuesta = await client.get(
-                    f"{self.base_url}/api/internal/users/roles-by-email",
-                    params={"email": email},
-                )
-                if respuesta.status_code == 200:
-                    data = respuesta.json()
-                    if isinstance(data, list):
-                        return [str(r) for r in data]
-        except Exception as exc:
-            print(f"Error obteniendo roles de {email}: {exc}")
+        if not email:
+            return []
+        clave = email.strip().lower()
+        cacheado = _ROLES.get(clave)
+        if cacheado is not None:
+            return cacheado
+
+        data = await get_json(
+            f"{self.base_url}/api/internal/users/roles-by-email",
+            params={"email": email},
+            timeout=3.0,
+        )
+        if isinstance(data, list):
+            return _ROLES.set(clave, [str(r) for r in data])
         return []
 
     async def get_user_profile(
@@ -108,29 +116,23 @@ class UserService:
             ):
                 return mio
 
-        headers = self._headers(authorization)
-        paths = [
-            f"/api/internal/users/{user_id}",
-            f"/api/users/{user_id}",
-        ]
+        clave = str(user_id).strip().lower()
+        cacheado = _PERFILES_POR_ID.get(clave)
+        if cacheado is not None:
+            return cacheado
 
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                for path in paths:
-                    response = await client.get(
-                        f"{self.base_url}{path}",
-                        headers=headers or None,
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        if isinstance(data, dict) and (
-                            data.get("id") or data.get("email") or data.get("fullName")
-                        ):
-                            return data
-                return {}
-        except Exception as e:
-            print(f"Error obteniendo perfil de usuario {user_id}: {e}")
-            return {}
+        headers = self._headers(authorization)
+        for path in (f"/api/internal/users/{user_id}", f"/api/users/{user_id}"):
+            data = await get_json(
+                f"{self.base_url}{path}",
+                headers=headers,
+                timeout=3.0,
+            )
+            if isinstance(data, dict) and (
+                data.get("id") or data.get("email") or data.get("fullName")
+            ):
+                return _PERFILES_POR_ID.set(clave, data)
+        return {}
 
     async def get_quiz_prep_status(
         self, role: str, user_id: str, authorization: Optional[str] = None
@@ -141,18 +143,12 @@ class UserService:
         (organizer o trainer). Devuelve el dict del microservicio o ``{}``.
         """
         role_path = "organizer" if str(role).upper() in ("ORGANIZADOR", "ORGANIZER") else "trainer"
-        headers = self._headers(authorization)
-        url = f"{self.base_url}/api/users/verify/quiz/prep/{role_path}/{user_id}"
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(url, headers=headers or None)
-                if response.status_code == 200:
-                    data = response.json()
-                    return data if isinstance(data, dict) else {}
-                print(f"Error quiz prep status ({response.status_code}): {response.text[:200]}")
-        except Exception as e:
-            print(f"Error consultando quiz prep: {e}")
-        return {}
+        data = await get_json(
+            f"{self.base_url}/api/users/verify/quiz/prep/{role_path}/{user_id}",
+            headers=self._headers(authorization),
+            timeout=2.5,
+        )
+        return data if isinstance(data, dict) else {}
 
     async def save_organizer_quiz_score(
         self, user_id: str, score: float, authorization: Optional[str] = None
@@ -181,16 +177,20 @@ class UserService:
         headers = self._headers(authorization)
         url = f"{self.base_url}/api/users/verify/quiz/{role_path}/{user_id}"
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.post(
-                    url,
-                    params={"score": score},
-                    headers=headers or None,
-                )
-                if response.status_code < 300:
-                    return True
-                print(f"Error registrando quiz score ({response.status_code}): {response.text[:200]}")
-                return False
+            cliente = await get_client()
+            response = await cliente.post(
+                url,
+                params={"score": score},
+                headers=headers or None,
+                timeout=httpx.Timeout(8.0, connect=1.5),
+            )
+            if response.status_code < 300:
+                # El perfil cacheado ya no refleja el quiz aprobado.
+                _PERFILES.invalidar()
+                _PERFILES_POR_ID.invalidar(str(user_id).strip().lower())
+                return True
+            print(f"Error registrando quiz score ({response.status_code}): {response.text[:200]}")
+            return False
         except Exception as e:
             print(f"Error llamando verify quiz score: {e}")
             return False
@@ -206,18 +206,12 @@ class UserService:
         if not authorization:
             return []
         path = "/api/admin/users/active" if solo_activos else "/api/admin/users"
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                respuesta = await client.get(
-                    f"{self.base_url}{path}",
-                    headers=self._headers(authorization),
-                )
-                if respuesta.status_code == 200:
-                    data = respuesta.json()
-                    return data if isinstance(data, list) else []
-        except Exception as exc:
-            print(f"Error listando usuarios: {exc}")
-        return []
+        data = await get_json(
+            f"{self.base_url}{path}",
+            headers=self._headers(authorization),
+            timeout=5.0,
+        )
+        return data if isinstance(data, list) else []
 
     async def list_inactive_users(
         self, authorization: Optional[str] = None
@@ -225,18 +219,12 @@ class UserService:
         """Usuarios inactivos: ``GET /api/admin/users/inactive``. Requiere JWT. Lista o ``[]``."""
         if not authorization:
             return []
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                respuesta = await client.get(
-                    f"{self.base_url}/api/admin/users/inactive",
-                    headers=self._headers(authorization),
-                )
-                if respuesta.status_code == 200:
-                    data = respuesta.json()
-                    return data if isinstance(data, list) else []
-        except Exception as exc:
-            print(f"Error listando usuarios inactivos: {exc}")
-        return []
+        data = await get_json(
+            f"{self.base_url}/api/admin/users/inactive",
+            headers=self._headers(authorization),
+            timeout=5.0,
+        )
+        return data if isinstance(data, list) else []
 
     async def search_users(
         self,
@@ -258,16 +246,10 @@ class UserService:
             params["disability"] = discapacidad.strip()
         if not params:
             return []
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                respuesta = await client.get(
-                    f"{self.base_url}/api/admin/users/search",
-                    params=params,
-                    headers=self._headers(authorization),
-                )
-                if respuesta.status_code == 200:
-                    data = respuesta.json()
-                    return data if isinstance(data, list) else []
-        except Exception as exc:
-            print(f"Error buscando usuarios: {exc}")
-        return []
+        data = await get_json(
+            f"{self.base_url}/api/admin/users/search",
+            params=params,
+            headers=self._headers(authorization),
+            timeout=5.0,
+        )
+        return data if isinstance(data, list) else []

@@ -41,7 +41,8 @@ from app.routers import (
     rutinas,
     voz,
 )
-from app.services.llm_service import LLMService
+from app.services.http_client import cerrar_cliente
+from app.services.llm_service import LLMService, abrir_presupuesto
 from app.tools.mcp import descripcion_protocolo
 from app.tools.registry import nombres_tools
 
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI):
 
     retencion.cancel()
     calentamiento.cancel()
+    await cerrar_cliente()
     await close_mongo_connection()
     print("Desconectado de MongoDB")
 
@@ -96,6 +98,36 @@ async def _precalentar_llm() -> None:
         print(f"Modelo {llm.model} listo y cargado en memoria")
     else:
         print("El modelo no respondió; el asistente sigue operativo con el motor local")
+
+
+class _PresupuestoLLM:
+    """Abre el reloj del LLM al entrar la petición.
+
+    Un turno puede llamar al modelo varias veces; con el presupuesto compartido
+    ninguna petición se alarga por encadenar intentos. El chat tiene ventana
+    propia (ahí se espera texto del modelo) y el crew queda fuera: ya tiene su
+    propio tiempo (CREW_TIMEOUT_SEGUNDOS).
+    """
+
+    def __init__(self, app: Callable):
+        """Guarda la aplicación ASGI a la que se reenvían las peticiones."""
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        """Fija el presupuesto de esta petición y delega en la app envolvida."""
+        if scope["type"] == "http":
+            ruta = scope.get("path") or ""
+            if not ruta.startswith("/api/ai/crew"):
+                abrir_presupuesto(
+                    settings.CHAT_PRESUPUESTO_SEGUNDOS
+                    if ruta.startswith("/api/ai/chat")
+                    else settings.LLM_PRESUPUESTO_SEGUNDOS
+                )
+        await self.app(scope, receive, send)
+
+    def __getattr__(self, name):
+        """Reenvía atributos desconocidos a la aplicación FastAPI interna."""
+        return getattr(self.app, name)
 
 
 class _StripTrailingSlash:
@@ -307,4 +339,4 @@ async def root():
 
 
 # Wrapper ASGI: uvicorn carga `app` (quita "/" final sin 307 a ai-service)
-app = _StripTrailingSlash(_fastapi)
+app = _StripTrailingSlash(_PresupuestoLLM(_fastapi))

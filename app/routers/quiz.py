@@ -8,9 +8,7 @@ from pydantic import BaseModel, Field
 from app.agents.quiz_agent import QuizAgent
 from app.deps.contexto import resolver_contexto
 from app.models.quiz import (
-    QuizEvaluarRequest,
     QuizEvaluarResponse,
-    QuizGenerarRequest,
     QuizGenerarResponse,
     QuizRespuestaItem,
 )
@@ -48,6 +46,7 @@ async def _generar(rol: str, request: QuizGenerarBody, authorization: Optional[s
             request.semilla,
             ctx.authorization,
             request.discipline_sport_ids,
+            ctx.perfil,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
