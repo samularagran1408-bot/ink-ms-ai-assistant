@@ -6,6 +6,8 @@ chatbot recibe `disability_type` con valores cortos. Todo el servicio trabaja
 con estas claves canónicas.
 """
 
+import re
+
 from app.nlp.texto import normalizar
 
 CANONICAS = ("visual", "auditiva", "motriz", "cognitiva", "intelectual", "multiple", "general")
@@ -35,6 +37,42 @@ def canonizar(texto: str | None) -> str:
         if any(a in limpio for a in alias):
             return clave
     return "general"
+
+
+_PATRON_EXPLICITO = re.compile(r"discapacidad(?:es)?\s+([a-z]+(?:\s+[a-z]+)?)")
+
+# Términos que sólo aparecen hablando de una discapacidad concreta. Los alias de
+# _ALIAS son demasiado amplios para un mensaje libre ("varias dudas", "gracias
+# por tu atención") y etiquetarían mal el turno.
+_INEQUIVOCOS: dict[str, tuple[str, ...]] = {
+    "visual": ("ciego", "ciega", "ciegos", "ciegas", "ceguera", "invidente", "baja vision"),
+    "auditiva": ("sordo", "sorda", "sordos", "sordas", "sordera", "hipoacusia"),
+    "motriz": (
+        "silla de ruedas", "paraplejia", "cuadriplejia", "hemiplejia",
+        "amputacion", "movilidad reducida",
+    ),
+    "intelectual": ("sindrome de down",),
+    "multiple": ("sordoceguera", "multidiscapacidad"),
+}
+
+
+def mencionada(texto: str | None) -> str:
+    """Discapacidad que nombra el propio mensaje, o "" si no habla de ninguna.
+
+    Sirve para no responder con la discapacidad del perfil cuando el usuario
+    pregunta por otra distinta ("deportes para discapacidad motriz").
+    """
+    limpio = normalizar(texto or "")
+    if not limpio:
+        return ""
+    for coincidencia in _PATRON_EXPLICITO.finditer(limpio):
+        clave = canonizar(coincidencia.group(1))
+        if clave != "general":
+            return clave
+    for clave, terminos in _INEQUIVOCOS.items():
+        if any(t in limpio for t in terminos):
+            return clave
+    return ""
 
 
 def coincide(discapacidad_usuario: str | None, *candidatos: str | None) -> bool:

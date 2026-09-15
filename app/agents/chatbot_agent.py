@@ -27,7 +27,7 @@ from app.data.quiz_banco import BANCOS
 from app.database.repositorio import obtener_catalogo_ejercicios, obtener_conocimiento
 from app.motor.rutinas import generar_rutina
 from app.motor.cuerpo import debe_dibujar, mapa_corporal
-from app.nlp.discapacidad import canonizar, coincide, descripcion
+from app.nlp.discapacidad import canonizar, coincide, descripcion, mencionada
 from app.nlp.intenciones import clasificar
 from app.nlp.admin_pedido import (
     coincidencias_usuario,
@@ -167,6 +167,16 @@ _TOOLS_UI = {
     "estadisticas_eventos": "Comparando inscritos por evento",
     "metricas_plataforma": "Consultando métricas",
 }
+
+
+def _discapacidad_del_turno(mensaje: str, perfil: Optional[str]) -> str:
+    """Discapacidad sobre la que va este turno.
+
+    Manda la que nombra el mensaje: si alguien con perfil auditivo pregunta por
+    deportes para discapacidad motriz, responderle con la suya es contestar otra
+    pregunta. Sin mención explícita se sigue usando la del perfil.
+    """
+    return mencionada(mensaje) or canonizar(perfil)
 
 
 def _evento_ui(
@@ -470,7 +480,7 @@ class ChatbotAgent:
         )
         # Sin id del cliente: continúa la última activa; si no hay, crea una nueva.
         conversacion_id = conversacion_id or cid_efectiva or str(uuid.uuid4())
-        clave_discapacidad = canonizar(discapacidad)
+        clave_discapacidad = _discapacidad_del_turno(mensaje, discapacidad)
         historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
         roles = roles or []
 
@@ -532,7 +542,7 @@ class ChatbotAgent:
             usuario_id, conversacion_id or ""
         )
         conversacion_id = conversacion_id or cid_efectiva or str(uuid.uuid4())
-        clave_discapacidad = canonizar(discapacidad)
+        clave_discapacidad = _discapacidad_del_turno(mensaje, discapacidad)
         historial_llm = self.conversaciones.mensajes_para_llm(historial, resumen)
         roles = roles or []
 
@@ -1272,7 +1282,10 @@ class ChatbotAgent:
         if not self.llm.is_configured:
             return None
 
-        contexto = await self._contexto_plataforma(authorization, perfil=perfil)
+        pedida = mencionada(mensaje)
+        contexto = await self._contexto_plataforma(
+            authorization, perfil=perfil, pedida=pedida
+        )
         sesion = self._texto_sesion("sesion", discapacidad, roles or [], perfil)
         pista = ""
         if borrador:
@@ -1281,6 +1294,13 @@ class ChatbotAgent:
                 f"no las copies literales):\n{borrador[:900]}"
             )
         hint = f"\nIntención probable: {intencion_hint}." if intencion_hint else ""
+        if pedida:
+            # Sin esto el modelo arrastraba la discapacidad del turno anterior o
+            # la del perfil y contestaba sobre otra distinta a la preguntada.
+            hint += (
+                f"\nEsta pregunta va sobre {descripcion(pedida)}, no sobre el "
+                f"perfil del usuario ni sobre la del mensaje anterior."
+            )
 
         mensajes = [
             {
@@ -1316,6 +1336,9 @@ class ChatbotAgent:
                     "No pidas email ni ID. No inventes eventos, deportes ni cupos: "
                     "solo los del contexto. Si preguntan estadísticas de inscritos "
                     "o aforo, usa los números de cada evento. "
+                    "Si preguntan por una discapacidad concreta, nombra solo los "
+                    "deportes que la tengan asociada en el contexto; si ninguno la "
+                    "tiene, dilo en vez de listar el catálogo entero. "
                     "Si preguntan el evento más reciente / próximo / que inicia, "
                     "usa la línea 'Próximo a iniciar' (criterio fecha). El de más "
                     "inscritos solo si preguntan popularidad o inscripciones. "
@@ -1451,12 +1474,15 @@ class ChatbotAgent:
         self,
         authorization: Optional[str],
         perfil: Optional[dict[str, Any]] = None,
+        pedida: str = "",
     ) -> str:
         """Resume catálogo vivo (deportes, discapacidades, eventos) para el prompt conversacional."""
         try:
-            deportes = await self.sports_service.get_deportes_activos(authorization)
-            eventos = await self.sports_service.get_eventos_activos(authorization)
-            discapacidades = await self.sports_service.get_discapacidades_activas(authorization)
+            deportes, eventos, discapacidades = await asyncio.gather(
+                self.sports_service.get_deportes_activos(authorization),
+                self.sports_service.get_eventos_activos(authorization),
+                self.sports_service.get_discapacidades_activas(authorization),
+            )
         except Exception as exc:
             print(f"No se pudo construir el contexto para el LLM: {exc}")
             return "- Catálogo no disponible en este momento."
@@ -1468,8 +1494,31 @@ class ChatbotAgent:
                 f"(discapacidad: {perfil.get('disability') or 'no indicada'})"
             )
         if deportes:
-            nombres = ", ".join(str(d.get("name")) for d in deportes[:10])
-            lineas.append(f"- Deportes activos: {nombres}")
+            # Con la lista de nombres a secas, ante "deportes para discapacidad
+            # motriz" el modelo sólo podía repetir el catálogo entero. Cada
+            # deporte va con las discapacidades que tiene asociadas de verdad.
+            lineas.append("- Deportes activos y discapacidades con adaptaciones registradas:")
+            compatibles = []
+            for deporte in deportes[:10]:
+                anidadas = [
+                    d for d in (deporte.get("disabilities") or []) if isinstance(d, dict)
+                ]
+                asociadas = ", ".join(str(d.get("name")) for d in anidadas if d.get("name"))
+                lineas.append(
+                    f"  · {deporte.get('name')} → {asociadas or 'sin asociaciones registradas'}"
+                )
+                senas = [str(d.get(c) or "") for d in anidadas for c in ("name", "category")]
+                if pedida and coincide(pedida, *senas):
+                    compatibles.append(str(deporte.get("name")))
+            if pedida:
+                # La conclusión ya resuelta: pidiéndole al modelo que la dedujera
+                # de la lista, se inventaba deportes para discapacidades sin
+                # ninguna asociación registrada.
+                lineas.append(
+                    f"- Deportes con adaptaciones registradas para {descripcion(pedida)}: "
+                    f"{', '.join(compatibles) if compatibles else 'ninguno'}. "
+                    f"No hay ningún otro; no añadas deportes fuera de esta lista."
+                )
         if discapacidades:
             nombres = ", ".join(str(d.get("name")) for d in discapacidades[:10])
             lineas.append(f"- Discapacidades contempladas: {nombres}")
@@ -1706,7 +1755,12 @@ class ChatbotAgent:
     async def _datos_deportes(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
     ) -> tuple[str, dict[str, Any]]:
-        """Resume el catálogo de deportes activos (nombre, dificultad, material)."""
+        """Resume el catálogo de deportes activos (nombre, dificultad, material).
+
+        Marca deporte a deporte si hay adaptaciones registradas para la
+        discapacidad del turno: sin ese dato el modelo presentaba el catálogo
+        entero como si fuera una lista de compatibles.
+        """
         deportes = await self.sports_service.get_deportes_activos(authorization)
         if not deportes:
             return (
@@ -1714,23 +1768,47 @@ class ChatbotAgent:
                 {"deportes": []},
             )
 
-        lineas = ["Deportes disponibles:"]
+        clave = canonizar(discapacidad)
+        etiqueta = descripcion(clave) if clave != "general" else ""
+        lineas = [
+            f"Catálogo de deportes activos. Se indica cuáles tienen adaptaciones "
+            f"registradas para {etiqueta} y cuáles no:"
+            if etiqueta
+            else "Catálogo de deportes activos (sin filtrar por discapacidad):"
+        ]
         resumen = []
         for deporte in deportes[:8]:
+            senas = [
+                str(d.get(campo) or "")
+                for d in (deporte.get("disabilities") or [])
+                if isinstance(d, dict)
+                for campo in ("name", "category")
+            ]
+            adaptado = bool(etiqueta) and coincide(clave, *senas)
             resumen.append({
                 "id": deporte.get("id"),
                 "nombre": deporte.get("name"),
                 "dificultad": deporte.get("difficulty"),
                 "material": deporte.get("requiredMaterials"),
+                "adaptaciones_registradas": adaptado if etiqueta else None,
             })
             detalle = f"- {deporte.get('name')}"
             if deporte.get("difficulty"):
                 detalle += f" · dificultad {deporte.get('difficulty')}"
             if deporte.get("requiredMaterials"):
                 detalle += f" · material: {deporte.get('requiredMaterials')}"
+            if etiqueta:
+                detalle += (
+                    " · con adaptaciones registradas"
+                    if adaptado
+                    else " · sin adaptaciones registradas"
+                )
             lineas.append(detalle)
 
-        return "\n".join(lineas), {"deportes": resumen}
+        return "\n".join(lineas), {
+            "deportes": resumen,
+            "discapacidad_consultada": clave if etiqueta else None,
+        }
 
     async def _datos_discapacidades(
         self, usuario_id: str, discapacidad: str, authorization: Optional[str]
