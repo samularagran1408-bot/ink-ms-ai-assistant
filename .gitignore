@@ -16,6 +16,11 @@ logs/
 # Venv local (Python 3.12 para CrewAI)
 .venv/
 
+# Bytecode y cachés de Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Store fake del crew: no versionar datos de demo
 app/crew/sandbox_data.json
 
