@@ -122,7 +122,7 @@ class HistorialAgent:
                 reverse=True,
             )[:12],
             "rf": ["RF47", "RF48"],
-            "caso_prueba": "CP23-HU46",
+            "caso_prueba": "CP24-HU46",
         }
 
     async def metricas(

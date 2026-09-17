@@ -54,6 +54,8 @@ async def comando_voz(request: VozRequest, authorization: Optional[str] = Header
             accion = "eventos"
         elif any(p in limpio for p in ("deporte", "que puedo practicar")):
             accion = "deportes"
+        elif any(p in limpio for p in ("contraste", "accesibilidad", "ir a")):
+            accion = "accesibilidad"
 
     resultado_chat = await chat_agent.procesar_mensaje(
         ctx.id,

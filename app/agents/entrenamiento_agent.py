@@ -1,8 +1,8 @@
-"""Casos HU40–HU50 alineados con los RF ya existentes (sin sensores ni visión)."""
+"""Casos HU40–HU50 alineados con los RF ya existentes (sin voz, sensores ni visión)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.agents.alertas_agent import AlertasAgent
@@ -18,7 +18,13 @@ from app.data.ejercicios import CATALOGO_EJERCICIOS, PAUTAS_DISCAPACIDAD
 from app.database.repositorio import obtener_catalogo_ejercicios
 from app.motor.rutinas import adaptacion_de, generar_rutina, interpretar_objetivo
 from app.nlp.discapacidad import canonizar, descripcion
-from app.nlp.entrenamiento_pedido import extraer_frecuencia, extraer_rpe
+from app.nlp.entrenamiento_pedido import (
+    extraer_frecuencia,
+    extraer_horas_silencio,
+    extraer_rpe,
+    extraer_umbral_alertas,
+    feedback_dificultad,
+)
 from app.nlp.texto import normalizar
 from app.services.entrenamiento_store import (
     cargar_perfil,
@@ -61,17 +67,20 @@ class EntrenamientoAgent:
             "rutina_adaptada": self._rutina_adaptada,
             "sugerir_adaptacion": self._sugerir_adaptacion,
             "evaluar_riesgo": self._evaluar_riesgo,
+            "historial_riesgo": self._historial_riesgo,
             "riesgo_dolor": self._riesgo_dolor,
             "rutina_objetivo": self._rutina_objetivo,
             "plan_semanal": self._plan_semanal,
+            "ajustar_plan_dificultad": self._ajustar_plan_dificultad,
             "rpe_alto": self._rpe_alto,
             "rpe_bajo": self._rpe_bajo,
-            "iniciar_entrenamiento": self._iniciar_voz,
-            "comando_voz": self._comando_voz,
+            "visualizar_dashboard": self._visualizar_dashboard,
+            "veredicto_progreso": self._veredicto_progreso,
             "dashboard": self._dashboard,
             "dashboard_predicciones": self._dashboard_predicciones,
             "comparar_mes": self._comparar_mes,
             "comparar_historial": self._comparar_historial,
+            "cierre_sesion_comparativa": self._cierre_sesion_comparativa,
             "recomendar_eventos": self._recomendar_eventos,
             "recomendar_deportes": self._recomendar_deportes,
             "detectar_discapacidad": self._detectar_discapacidad,
@@ -80,6 +89,8 @@ class EntrenamientoAgent:
             "alerta_entrenador": self._alerta_entrenador,
             "progreso_entrenador": self._progreso_entrenador,
             "umbral_alertas_semana": self._umbral_alertas_semana,
+            "configurar_alertas": self._configurar_alertas,
+            "avance_plan_competencia": self._avance_plan_competencia,
         }.get(comando)
         if not fn:
             texto, datos = "No reconocí ese caso. Prueba con las frases de la guía HU40–HU50.", {
@@ -179,7 +190,7 @@ class EntrenamientoAgent:
             "nivel": nivel,
         }
         texto = (
-            f"Modificación automática de «{ejercicio.get('nombre')}» "
+            f"Variante adaptada de «{ejercicio.get('nombre')}» "
             f"para {descripcion(clave)} (nivel {nivel}): {variante}"
         )
         return texto, {
@@ -236,9 +247,9 @@ class EntrenamientoAgent:
             perfil["usuario_id"], discapacidad, authorization, usuario, False, extraer_rpe(mensaje)
         )
         texto = (
-            f"Predicción de riesgo de lesión: {ev.get('nivel')} "
+            f"Predicción heurística de riesgo de lesión: {ev.get('nivel')} "
             f"({ev.get('score_riesgo')}/100). {ev.get('alerta')} "
-            "Es heurística con tu historial de perfil/carga, no un diagnóstico."
+            "Usa perfil, carga y RPE reportado; no analiza movimiento por cámara."
         )
         umbral = None
         if ev.get("nivel") in ("moderado", "alto"):
@@ -391,7 +402,7 @@ class EntrenamientoAgent:
             "Ábrelo en la pestaña Planes para ver cada semana."
         )
         return texto, {
-            "caso_prueba": "CP16-HU42",
+            "caso_prueba": None,
             "plan": {
                 "plan_id": plan.get("plan_id"),
                 "semanas": plan.get("semanas"),
@@ -401,7 +412,77 @@ class EntrenamientoAgent:
                 "sesiones": preview,
                 "resumen": plan.get("resumen") or plan.get("progresion"),
             },
-            "sugerencias": ["Muéstrame mi dashboard", "La sesión estuvo difícil RPE 9"],
+            "sugerencias": [
+                "El plan me quedó difícil, ajústalo",
+                "Visualizar dashboard",
+            ],
+        }
+
+    async def _ajustar_plan_dificultad(self, perfil, mensaje, discapacidad, authorization, usuario):
+        """CP16-HU42 — regenera el plan según feedback de dificultad (no es solo un tip de RPE)."""
+        sentido = feedback_dificultad(mensaje)
+        freq = extraer_frecuencia(mensaje)
+        nivel = "principiante"
+        detalle = "Mantengo el plan."
+        if sentido == "bajar":
+            nivel = "principiante"
+            freq = max(2, freq - 1)
+            detalle = "Bajé volumen e intensidad: menos sesiones y nivel principiante."
+        elif sentido == "subir":
+            nivel = "intermedio"
+            freq = min(5, freq + 1)
+            detalle = "Subí un poco la exigencia: más sesiones y nivel intermedio."
+        objetivo = interpretar_objetivo(mensaje) or perfil.get("ultimo_objetivo") or "general"
+        perfil["ultimo_objetivo"] = objetivo
+        plan = None
+        if authorization:
+            try:
+                plan = await self.planes.generar_plan(
+                    usuario_id=perfil["usuario_id"],
+                    objetivo=str(objetivo),
+                    discapacidad=discapacidad,
+                    nivel=nivel,
+                    semanas=4,
+                    sesiones_por_semana=freq,
+                    authorization=authorization,
+                    perfil=usuario or None,
+                )
+            except Exception:
+                plan = None
+        if not plan:
+            plan = {
+                "plan_id": "ajuste-local",
+                "semanas": 4,
+                "sesiones_por_semana": freq,
+                "objetivo": objetivo,
+                "nivel": nivel,
+                "total_sesiones": 4 * freq,
+                "resumen": detalle,
+            }
+        perfil["plan_id"] = plan.get("plan_id")
+        perfil["plan_ajuste"] = {
+            "sentido": sentido,
+            "nivel": nivel,
+            "sesiones_por_semana": freq,
+            "detalle": detalle,
+            "fecha": _ahora_iso(),
+        }
+        texto = (
+            f"Plan ajustado por feedback de dificultad ({sentido}). {detalle} "
+            f"Quedó en {plan.get('semanas')} semanas × {plan.get('sesiones_por_semana')} "
+            f"sesiones/semana (nivel {nivel})."
+        )
+        return texto, {
+            "caso_prueba": "CP16-HU42",
+            "plan_ajuste": perfil["plan_ajuste"],
+            "plan": {
+                "plan_id": plan.get("plan_id"),
+                "semanas": plan.get("semanas"),
+                "sesiones_por_semana": plan.get("sesiones_por_semana"),
+                "objetivo": plan.get("objetivo"),
+                "nivel": nivel,
+            },
+            "sugerencias": ["Evalua mi progreso", "Visualizar dashboard"],
         }
 
     async def _rpe_alto(self, perfil, mensaje, _disc, _auth, _user):
@@ -412,7 +493,7 @@ class EntrenamientoAgent:
         )
         texto = (
             f"Fatiga percibida RPE {rpe}/10. Te sugiero una pausa, bajar un 20% el volumen "
-            "y retomar con movilidad. No uso sensores de pulso: el RPE es tu reporte."
+            "y retomar con movilidad. Sin sensores: el RPE es tu reporte post-sesión."
         )
         umbral = await self._anotar_alerta_riesgo(
             perfil, "FATIGA_O_DOLOR", f"RPE {rpe}", _auth
@@ -439,40 +520,93 @@ class EntrenamientoAgent:
             "sugerencias": ["Muéstrame mi dashboard"],
         }
 
-    async def _iniciar_voz(self, perfil, _mensaje, _disc, _auth, _user):
-        perfil["voz_activa"] = True
-        perfil["estado_sesion"] = "activa"
-        texto = (
-            "Asistencia de voz activada. Puedo leerte esta respuesta en audio. "
-            "Comando recibido: iniciar entrenamiento."
+    async def _visualizar_dashboard(self, perfil, mensaje, discapacidad, authorization, usuario):
+        """CP19-HU44 — muestra KPIs del dashboard del atleta (sin voz)."""
+        texto, datos = await self._dashboard(
+            perfil, mensaje, discapacidad, authorization, usuario
         )
-        return texto, {
-            "caso_prueba": "CP19-HU44",
-            "voz_activa": True,
-            "respuesta_auditiva": True,
-            "estado_sesion": "activa",
-            "sugerencias": ["Comando de voz: dame una rutina"],
-        }
+        vista = datos.get("vista") or {}
+        kpis = vista.get("kpis") or []
+        lineas = ["Dashboard del atleta (indicadores):"]
+        for kpi in kpis:
+            lineas.append(f"- {kpi.get('label')}: {kpi.get('valor')}")
+        if len(lineas) == 1:
+            lineas.append("- Aún sin datos; registra sesiones o inscripciones.")
+        texto = "\n".join(lineas)
+        datos["caso_prueba"] = "CP19-HU44"
+        datos["sugerencias"] = ["Cómo voy este mes", "Historial de riesgo"]
+        return texto, datos
 
-    async def _comando_voz(self, perfil, mensaje, discapacidad, _auth, _user):
-        catalogo = await obtener_catalogo_ejercicios()
-        rutina = generar_rutina(
-            discapacidad=discapacidad,
-            objetivo_texto=mensaje,
-            duracion_minutos=25,
-            catalogo=catalogo,
-            semilla=7,
-        )
-        nombres = [e.get("nombre") for e in (rutina.get("ejercicios") or [])[:3]]
+    async def _veredicto_progreso(self, perfil, _mensaje, _disc, authorization, _user):
+        """CP20-HU44 — veredicto mes actual vs anterior: progresando / estable / cayendo / va mal."""
+        remoto: dict[str, Any] = {}
+        if authorization:
+            try:
+                remoto = await self.historial.comparar(perfil["usuario_id"], authorization) or {}
+            except Exception:
+                remoto = {}
+        local = perfil.get("sesiones_cerradas") or []
+        comp = remoto.get("comparativa") or {}
+        insc = comp.get("inscripciones_eventos") or {}
+        rpe = comp.get("sesiones_rpe") or {}
+        act_insc = int(insc.get("actual") or 0)
+        prev_insc = int(insc.get("anterior") or 0)
+        act_ses = int(rpe.get("actual") or len(local))
+        prev_ses = int(rpe.get("anterior") or 0)
+        rpe_act = rpe.get("rpe_promedio_actual")
+        rpe_prev = rpe.get("rpe_promedio_anterior")
+        if rpe_act is None and local:
+            vals = [float(s.get("rpe") or 0) for s in local if s.get("rpe") is not None]
+            rpe_act = round(sum(vals) / len(vals), 2) if vals else None
+
+        veredicto = "estable"
+        mensaje_v = "Vas estable: tu actividad es similar al mes anterior."
+        if act_insc + act_ses < prev_insc + prev_ses:
+            veredicto = "cayendo"
+            mensaje_v = "Vas cayendo: este mes tienes menos actividad que el anterior."
+        elif act_insc + act_ses > prev_insc + prev_ses:
+            veredicto = "progresando"
+            mensaje_v = "Vas progresando: este mes sumaste más actividad que el anterior."
+        if (
+            rpe_act is not None
+            and rpe_prev is not None
+            and float(rpe_act) >= float(rpe_prev) + 1.5
+            and act_ses >= prev_ses
+        ):
+            veredicto = "va_mal"
+            mensaje_v = (
+                "Vas mal por sobrecarga: el RPE promedio subió mucho respecto al mes pasado. "
+                "Conviene bajar volumen o descansar."
+            )
+        elif (
+            rpe_act is not None
+            and rpe_prev is not None
+            and float(rpe_act) <= float(rpe_prev) - 0.8
+            and veredicto == "progresando"
+        ):
+            mensaje_v = (
+                "Vas progresando bien: más actividad y mejor recuperación (RPE más bajo)."
+            )
+
         texto = (
-            "Comando de voz ejecutado. Respuesta auditiva: "
-            f"rutina lista con {', '.join(n for n in nombres if n)}."
+            f"{mensaje_v}\n"
+            f"- Inscripciones: {act_insc} este mes vs {prev_insc} el anterior.\n"
+            f"- Sesiones: {act_ses} vs {prev_ses}.\n"
+            f"- RPE promedio: {rpe_act if rpe_act is not None else 'sin datos'} "
+            f"vs {rpe_prev if rpe_prev is not None else 'sin datos'}.\n"
+            f"Veredicto: {veredicto}."
         )
         return texto, {
             "caso_prueba": "CP20-HU44",
-            "respuesta_auditiva": True,
-            "voz_activa": bool(perfil.get("voz_activa")),
-            "sugerencias": ["Visualizar dashboard"],
+            "veredicto": veredicto,
+            "periodo_actual": remoto.get("periodo_actual"),
+            "periodo_anterior": remoto.get("periodo_anterior"),
+            "comparativa": {
+                "inscripciones": {"actual": act_insc, "anterior": prev_insc},
+                "sesiones": {"actual": act_ses, "anterior": prev_ses},
+                "rpe_promedio": {"actual": rpe_act, "anterior": rpe_prev},
+            },
+            "sugerencias": ["Visualizar dashboard", "El plan me quedó difícil, ajústalo"],
         }
 
     async def _dashboard(self, perfil, _mensaje, _disc, authorization, usuario):
@@ -514,25 +648,51 @@ class EntrenamientoAgent:
             "vista": vista,
             "estadisticas": vista,
             "graficos": True,
-            "sugerencias": ["Dashboard de métricas y predicciones"],
+            "sugerencias": ["Visualizar dashboard", "Cómo voy este mes"],
         }
 
     async def _dashboard_predicciones(self, perfil, mensaje, discapacidad, authorization, usuario):
-        ev = await self._score_riesgo(
-            perfil["usuario_id"], discapacidad, authorization, usuario, False,
-            perfil.get("ultimo_rpe"),
-        )
-        texto, datos = await self._dashboard(
+        """Compat: redirige al historial de riesgo (CP22)."""
+        return await self._historial_riesgo(
             perfil, mensaje, discapacidad, authorization, usuario
         )
-        datos["caso_prueba"] = "CP22-HU45"
-        datos["prediccion_riesgo"] = ev
-        datos["graficos"] = True
-        texto = (
-            f"{texto} Predicción asociada: riesgo {ev.get('nivel')} "
-            f"({ev.get('score_riesgo')}/100)."
-        )
-        return texto, datos
+
+    async def _historial_riesgo(self, perfil, _mensaje, discapacidad, authorization, usuario):
+        """CP22-HU45 — listar evaluaciones de riesgo recientes (no es el dashboard)."""
+        items: list[dict[str, Any]] = []
+        if authorization:
+            try:
+                items = await self.riesgo.listar_historial(perfil["usuario_id"])
+            except Exception:
+                items = []
+        if not items:
+            # Fallback: alertas locales del perfil de entrenamiento.
+            items = list(perfil.get("alertas_riesgo") or [])[-5:]
+        if not items:
+            ev = await self._score_riesgo(
+                perfil["usuario_id"], discapacidad, authorization, usuario, False,
+                perfil.get("ultimo_rpe"),
+            )
+            items = [{
+                "nivel": ev.get("nivel"),
+                "score_riesgo": ev.get("score_riesgo"),
+                "alerta": ev.get("alerta"),
+                "fecha": _ahora_iso(),
+                "origen": "evaluacion_actual",
+            }]
+        lineas = ["Historial de evaluaciones de riesgo (más recientes):"]
+        for item in items[:5]:
+            lineas.append(
+                f"- {item.get('fecha') or 'sin fecha'}: "
+                f"nivel {item.get('nivel') or item.get('tipo') or 'n/d'} "
+                f"(score {item.get('score_riesgo') or item.get('score') or '—'})"
+            )
+        return "\n".join(lineas), {
+            "caso_prueba": "CP22-HU45",
+            "historial_riesgo": items[:5],
+            "total": len(items),
+            "sugerencias": ["Cuál es mi riesgo de lesión", "Visualizar dashboard"],
+        }
 
     async def _comparar_mes(self, perfil, _mensaje, _disc, authorization, _user):
         remoto: dict[str, Any] = {}
@@ -581,77 +741,67 @@ class EntrenamientoAgent:
             "tendencia": remoto.get("tendencia") or "estable",
         }
         return texto, {
-            "caso_prueba": "CP23-HU46",
+            "caso_prueba": "CP24-HU46",
             "comparativa": comp or vista["comparativa"],
             "vista": vista,
             "estadisticas": vista,
             "graficos": True,
-            "sugerencias": ["Compara con mi historial"],
+            "sugerencias": ["Cómo voy este mes", "Cómo salió mi sesión"],
         }
 
-    async def _comparar_historial(self, perfil, _mensaje, _disc, authorization, _user):
+    async def _cierre_sesion_comparativa(self, perfil, mensaje, _disc, _auth, _user):
+        """CP23-HU46 — al cerrar sesión: última vs promedio histórico y mejor marca."""
+        rpe = extraer_rpe(mensaje)
         historial = list(perfil.get("sesiones_cerradas") or [])
-        remoto: dict[str, Any] = {}
-        if authorization:
-            try:
-                remoto = await self.historial.comparar(perfil["usuario_id"], authorization) or {}
-            except Exception:
-                remoto = {}
-        extra = remoto.get("sesiones_historial") or []
-        if extra and not historial:
-            historial = extra
+        if rpe is not None:
+            historial.append({"fecha": _ahora_iso(), "rpe": rpe, "marca": rpe})
+            perfil["sesiones_cerradas"] = historial
+            perfil["ultimo_rpe"] = rpe
         valores = [float(s.get("rpe") or 0) for s in historial if s.get("rpe") is not None]
-        actual = valores[0] if extra and valores else (valores[-1] if valores else None)
-        if extra and valores:
-            actual = float(extra[0].get("rpe") or valores[0])
-        elif valores:
-            actual = valores[-1]
-        promedio = round(sum(valores) / len(valores), 2) if valores else None
-        delta = None
-        if actual is not None and promedio is not None:
-            delta = round(actual - promedio, 2)
+        if not valores:
+            return (
+                "Aún no hay sesiones para comparar. Registra un RPE, por ejemplo: "
+                "«Cómo salió mi sesión RPE 6».",
+                {"caso_prueba": "CP23-HU46", "comparacion_sesion": {"sesiones": 0}},
+            )
+        actual = valores[-1]
+        promedio = round(sum(valores) / len(valores), 2)
+        mejor = min(valores)  # RPE más bajo = mejor recuperación / sesión más controlada
+        peor = max(valores)
+        perfil["mejor_marca"] = mejor
+        delta_prom = round(actual - promedio, 2)
+        if actual <= mejor:
+            juicio = "Igualaste o superaste tu mejor sesión (RPE más bajo)."
+        elif actual <= promedio:
+            juicio = "Vas bien: esta sesión quedó por debajo o en tu promedio histórico."
+        else:
+            juicio = "Esta sesión fue más exigente que tu promedio; cuida la recuperación."
         texto = (
-            "Evolución vs tu historial personal (sesiones, no riesgos):\n"
-            f"- Última sesión RPE: {actual if actual is not None else 'sin datos'}.\n"
-            f"- Promedio histórico: {promedio if promedio is not None else 'aún vacío'}.\n"
-            f"- Sesiones registradas: {len(valores)}.\n"
+            "Cierre de sesión vs historial:\n"
+            f"- Sesión actual RPE: {actual}.\n"
+            f"- Promedio histórico: {promedio}.\n"
+            f"- Mejor sesión (RPE más bajo): {mejor}.\n"
+            f"- Peor sesión (RPE más alto): {peor}.\n"
+            f"- Delta vs promedio: {delta_prom:+}.\n"
+            f"{juicio}"
         )
-        if delta is not None:
-            if delta < 0:
-                texto += f"La última sesión fue {abs(delta)} puntos más suave que tu promedio."
-            elif delta > 0:
-                texto += f"La última sesión fue {delta} puntos más exigente que tu promedio."
-            else:
-                texto += "La última sesión está en tu promedio."
-        vista = {
-            "kpis": [
-                {"clave": "ultima", "label": "Última sesión RPE", "valor": actual if actual is not None else "—", "icono": "bolt"},
-                {"clave": "promedio", "label": "Promedio histórico", "valor": promedio if promedio is not None else "—", "icono": "chart-bar"},
-                {"clave": "sesiones", "label": "Sesiones", "valor": len(valores), "icono": "heart"},
-            ],
-            "comparativa": [
-                {
-                    "label": "RPE última vs promedio",
-                    "actual": actual or 0,
-                    "anterior": promedio or 0,
-                    "delta": delta or 0,
-                }
-            ],
-            "sesiones_historial": (extra or historial)[:8],
-        }
         return texto, {
-            "caso_prueba": "CP24-HU46",
+            "caso_prueba": "CP23-HU46",
             "comparacion_sesion": {
                 "ultima": actual,
                 "promedio_historico": promedio,
+                "mejor_sesion": mejor,
+                "peor_sesion": peor,
                 "sesiones": len(valores),
-                "delta": delta,
+                "delta": delta_prom,
+                "juicio": juicio,
             },
-            "vista": vista,
-            "estadisticas": vista,
-            "graficos": True,
-            "sugerencias": ["Recomiéndame eventos"],
+            "sugerencias": ["Cómo voy este mes", "Visualizar dashboard"],
         }
+
+    async def _comparar_historial(self, perfil, mensaje, disc, auth, user):
+        """Compat: la comparativa post-sesión ahora es CP23."""
+        return await self._cierre_sesion_comparativa(perfil, mensaje, disc, auth, user)
 
     async def _recomendar_eventos(self, perfil, _mensaje, _disc, authorization, usuario):
         recs: list = []
@@ -909,5 +1059,87 @@ class EntrenamientoAgent:
             "canales": ["push", "email"],
             "notificado": True,
             "notificacion_usuario": notif,
-            "sugerencias": ["Cuál es mi riesgo de lesión"],
+            "sugerencias": ["Configurar umbral de alertas a 5", "Silenciar alertas 24 horas"],
+        }
+
+    async def _configurar_alertas(self, perfil, mensaje, _disc, _auth, _user):
+        """Ajuste auxiliar de umbral/silencio (ya no es CP34)."""
+        umbrales = perfil.get("umbrales") if isinstance(perfil.get("umbrales"), dict) else {}
+        umbral_nuevo = extraer_umbral_alertas(mensaje)
+        n = normalizar(mensaje)
+        silenciar = any(p in n for p in ("silenciar", "silencio"))
+        cambios: list[str] = []
+        if umbral_nuevo is not None:
+            umbrales["alertas_semana"] = umbral_nuevo
+            perfil["umbrales"] = umbrales
+            perfil["aviso_umbral_semana_en"] = None
+            cambios.append(f"umbral semanal = {umbral_nuevo}")
+        if silenciar:
+            horas = extraer_horas_silencio(mensaje)
+            hasta = datetime.now(timezone.utc) + timedelta(hours=horas)
+            perfil["silenciado_hasta"] = hasta.isoformat()
+            cambios.append(f"silencio temporal hasta {hasta.isoformat()} ({horas} h)")
+        if not cambios:
+            actual = int(umbrales.get("alertas_semana") or 3)
+            silenciado = perfil.get("silenciado_hasta")
+            texto = (
+                f"Umbral actual de alertas semanales: {actual}. "
+                f"Silencio: {silenciado or 'inactivo'}."
+            )
+        else:
+            texto = "Preferencias de alerta actualizadas: " + "; ".join(cambios) + "."
+        return texto, {
+            "umbrales": perfil.get("umbrales"),
+            "silenciado_hasta": perfil.get("silenciado_hasta"),
+            "cambios": cambios,
+            "sugerencias": ["Avance del plan de competencia"],
+        }
+
+    async def _avance_plan_competencia(self, perfil, _mensaje, discapacidad, authorization, _user):
+        """CP34-HU50 — % de avance del plan de competencia (checklist/sesiones)."""
+        modo: dict[str, Any] = {}
+        if authorization:
+            try:
+                modo = await self.competencia.obtener_modo(
+                    perfil["usuario_id"], authorization=authorization
+                ) or {}
+            except Exception:
+                modo = {}
+        plan = modo.get("plan") if isinstance(modo.get("plan"), dict) else {}
+        checklist = list(plan.get("checklist") or [])
+        if not checklist:
+            checklist = [
+                {"id": "c1", "texto": "Sesión técnica", "hecho": False},
+                {"id": "c2", "texto": "Sesión de potencia", "hecho": False},
+                {"id": "c3", "texto": "Movilidad / recuperación", "hecho": False},
+            ]
+            plan = {**plan, "checklist": checklist, "semanas": plan.get("semanas") or 3}
+        marcados = 0
+        for item in checklist:
+            if isinstance(item, dict) and not item.get("hecho"):
+                item["hecho"] = True
+                marcados = 1
+                break
+        hechos = sum(1 for i in checklist if isinstance(i, dict) and i.get("hecho"))
+        total = max(1, len(checklist))
+        pct = round(100.0 * hechos / total, 1)
+        perfil["modo_competencia"] = True
+        perfil["avance_competencia"] = {
+            "porcentaje": pct,
+            "hechos": hechos,
+            "total": total,
+            "fecha": _ahora_iso(),
+        }
+        texto = (
+            f"Avance del plan de competencia: {pct}% "
+            f"({hechos}/{total} ítems del checklist). "
+            + (f"Marqué {marcados} pendiente(s) como hecho. " if marcados else "")
+            + "Sigue en el apartado de competencia para el detalle del plan."
+        )
+        return texto, {
+            "caso_prueba": "CP34-HU50",
+            "avance": perfil["avance_competencia"],
+            "checklist": checklist,
+            "plan": {"semanas": plan.get("semanas"), "objetivo": plan.get("objetivo")},
+            "sugerencias": ["Activa modo competencia", "Cómo voy este mes"],
         }

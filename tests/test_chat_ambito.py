@@ -1,4 +1,4 @@
-"""El chat flotante no consume tools de competencia, riesgo, rutinas, planes ni estadísticas."""
+"""El chat ejecuta casos HU sin voz; bloquea solo escrituras de rutina en sports."""
 
 from __future__ import annotations
 
@@ -12,59 +12,34 @@ from app.tools.chat_ambito import (  # noqa: E402
     COMANDOS_ENTRENAMIENTO_CHAT,
     comando_entrenamiento_para_chat,
     filtrar_definiciones_chat,
-    intencion_de_otro_apartado,
     tool_bloqueada_en_chat,
 )
 from app.tools.registry import TOOL_DEFINITIONS  # noqa: E402
 
 
-def test_comandos_consulta_siguen_en_chat():
-    assert detectar_comando_entrenamiento("Recomiéndame eventos") == "recomendar_eventos"
-    assert comando_entrenamiento_para_chat("recomendar_eventos") == "recomendar_eventos"
-    assert comando_entrenamiento_para_chat("recomendar_deportes") == "recomendar_deportes"
-    assert comando_entrenamiento_para_chat("detectar_discapacidad") == "detectar_discapacidad"
-    assert COMANDOS_ENTRENAMIENTO_CHAT == {
-        "recomendar_eventos",
-        "recomendar_deportes",
-        "detectar_discapacidad",
-    }
+def test_comandos_hu_salen_al_chat():
+    assert comando_entrenamiento_para_chat("visualizar_dashboard") == "visualizar_dashboard"
+    assert comando_entrenamiento_para_chat("veredicto_progreso") == "veredicto_progreso"
+    assert comando_entrenamiento_para_chat("ajustar_plan_dificultad") == "ajustar_plan_dificultad"
+    assert comando_entrenamiento_para_chat("historial_riesgo") == "historial_riesgo"
+    assert comando_entrenamiento_para_chat("avance_plan_competencia") == "avance_plan_competencia"
+    assert "activar_tts" not in COMANDOS_ENTRENAMIENTO_CHAT
+    assert "comando_accesibilidad" not in COMANDOS_ENTRENAMIENTO_CHAT
 
 
-def test_comandos_de_apartados_no_salen_al_chat():
-    assert detectar_comando_entrenamiento("Quiero una rutina adaptada") == "rutina_adaptada"
-    assert comando_entrenamiento_para_chat("rutina_adaptada") is None
-    assert comando_entrenamiento_para_chat("plan_semanal") is None
-    assert comando_entrenamiento_para_chat("evaluar_riesgo") is None
-    assert comando_entrenamiento_para_chat("modo_competencia") is None
-    assert comando_entrenamiento_para_chat("dashboard") is None
-    assert comando_entrenamiento_para_chat("comparar_mes") is None
+def test_voz_ya_no_es_comando_hu():
+    assert detectar_comando_entrenamiento("Activar TTS") is None
+    assert detectar_comando_entrenamiento("Activar asistencia de voz") is None
+    assert detectar_comando_entrenamiento("Ir a eventos") is None
+    assert detectar_comando_entrenamiento("Alto contraste") is None
 
 
-def test_tools_de_apartados_fuera_del_catalogo_chat():
-    for nombre in (
-        "generar_rutina",
-        "listar_ejercicios",
-        "estadisticas_usuario",
-        "recomendar_rutina_nueva",
-        "dibujar_cuerpo",
-        "crear_rutina",
-        "publicar_rutina",
-    ):
-        assert tool_bloqueada_en_chat(nombre)
+def test_escrituras_plataforma_siguen_fuera():
+    assert tool_bloqueada_en_chat("crear_rutina")
+    assert tool_bloqueada_en_chat("publicar_rutina")
     filtradas = filtrar_definiciones_chat(TOOL_DEFINITIONS)
     nombres = {(t.get("function") or {}).get("name") for t in filtradas}
-    assert "listar_eventos" in nombres
-    assert "consultar_mi_perfil" in nombres
-    assert "generar_rutina" not in nombres
-    assert "estadisticas_usuario" not in nombres
-
-
-def test_intenciones_de_apartados():
-    assert intencion_de_otro_apartado("rutinas")
-    assert intencion_de_otro_apartado("progreso")
-    assert intencion_de_otro_apartado("lesiones")
-    assert not intencion_de_otro_apartado("eventos")
-    assert not intencion_de_otro_apartado("cuenta")
+    assert "crear_rutina" not in nombres
 
 
 def _ejecutar_todo() -> int:

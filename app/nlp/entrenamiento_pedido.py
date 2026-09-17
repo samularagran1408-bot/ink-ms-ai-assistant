@@ -1,4 +1,4 @@
-"""Comandos simples HU40–HU50 alineados con los RF del asistente."""
+"""Comandos HU40–HU50 del asistente (sin voz, sin sensores, sin visión)."""
 
 from __future__ import annotations
 
@@ -18,10 +18,27 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "notificacion push y correo",
         "push y correo",
     )),
+    ("avance_plan_competencia", (
+        "avance del plan de competencia",
+        "progreso del plan de competencia",
+        "marcar sesion del plan",
+        "completar checklist de competencia",
+        "porcentaje del plan de competencia",
+        "avance de mi plan competitivo",
+    )),
+    ("configurar_alertas", (
+        "configurar umbrales",
+        "configurar umbral",
+        "umbral personalizado",
+        "umbral de alertas",
+        "cambiar umbral de alertas",
+        "silenciar alertas",
+        "silencio temporal",
+    )),
     ("detectar_discapacidad", (
         "silla de ruedas", "detecta mi discapacidad", "detectar discapacidad",
         "configuracion de accesibilidad", "soy ciego", "soy sordo",
-        "sugiere accesibilidad",
+        "sugiere accesibilidad", "sugiere configuracion de accesibilidad",
     )),
     ("alerta_entrenador", (
         "avisa al entrenador", "alerta al entrenador", "notifica al entrenador",
@@ -40,9 +57,14 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("riesgo_dolor", (
         "tengo dolor", "duele al entrenar", "dolor al entrenar", "molestia al entrenar",
     )),
+    ("historial_riesgo", (
+        "historial de riesgo", "mis evaluaciones de riesgo",
+        "historial de evaluaciones", "ultimas evaluaciones de riesgo",
+        "ver historial de riesgo",
+    )),
     ("evaluar_riesgo", (
         "riesgo de lesion", "prediccion de lesion", "mi riesgo",
-        "probabilidad de lesion", "evalua mi riesgo",
+        "probabilidad de lesion", "evalua mi riesgo", "evaluar riesgo",
     )),
     ("recomendar_deportes", (
         "que deportes puedo", "deportes para mi", "deportes segun mi perfil",
@@ -52,6 +74,17 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "recomienda eventos", "recomiendame eventos", "eventos para mi perfil",
         "eventos segun mi perfil",
     )),
+    ("cierre_sesion_comparativa", (
+        "cierre de sesion", "al finalizar sesion", "comparar mi sesion",
+        "sesion vs promedio", "mejor sesion", "promedio historico y mejor",
+        "como salio mi sesion",
+    )),
+    ("veredicto_progreso", (
+        "voy bien o mal", "estoy progresando", "estoy cayendo",
+        "evalua mi progreso", "veredicto de progreso", "tendencia de progreso",
+        "como voy este mes", "progreso mes actual", "mes actual y el anterior",
+        "si voy mejorando", "si voy empeorando",
+    )),
     ("comparar_historial", (
         "compara con mi historial", "evolucion de mis sesiones",
         "comparativa con historial", "sesiones actuales con historicas",
@@ -59,30 +92,32 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("comparar_mes", (
         "compara este mes", "mes anterior", "comparativa mensual",
-        "mes actual contra el anterior", "comparativa", "mi evolucion",
+        "mes actual contra el anterior", "comparativa",
     )),
-    ("dashboard_predicciones", (
-        "predicciones del dashboard", "metricas avanzadas", "dashboard de metricas",
-        "rendimiento y predicciones",
+    ("visualizar_dashboard", (
+        "visualizar dashboard", "muestra el dashboard", "muestrame el dashboard",
+        "ver dashboard", "dashboard del atleta", "mis indicadores",
+        "mostrar mis kpis", "kpis del dashboard",
     )),
     ("dashboard", (
-        "visualizar dashboard", "muestra el dashboard", "muestrame el dashboard",
         "muestrame mi dashboard", "mi dashboard", "mi progreso",
         "graficos interactivos", "mis metricas", "ver mi dashboard",
     )),
-    ("iniciar_entrenamiento", (
-        "iniciar entrenamiento", "iniciar el entrenamiento",
-        "activar asistencia de voz", "activar voz", "asistencia de voz",
-    )),
-    ("comando_voz", (
-        "comando de voz", "por voz", "respuesta auditiva",
+    ("ajustar_plan_dificultad", (
+        "ajusta el plan", "ajustar el plan", "ajustar plan",
+        "plan me quedo dificil", "plan estuvo dificil", "plan es muy dificil",
+        "plan me quedo facil", "plan estuvo facil", "plan es muy facil",
+        "feedback de dificultad", "el plan me resulta dificil",
+        "el plan me resulta facil", "baja la intensidad del plan",
+        "sube la intensidad del plan",
     )),
     ("rpe_alto", (
         "estoy fatigado", "rpe 8", "rpe 9", "rpe 10", "demasiado cansado",
-        "estuvo dificil",
+        "registrar rpe alto",
     )),
     ("rpe_bajo", (
-        "estuvo facil", "rpe 3", "rpe 2", "rpe 1", "rpe 4",
+        "rpe 3", "rpe 2", "rpe 1", "rpe 4",
+        "registrar rpe bajo", "sesion estuvo facil rpe",
     )),
     ("plan_semanal", (
         "rutina semanal", "plan semanal", "veces por semana",
@@ -100,12 +135,11 @@ _COMANDOS: tuple[tuple[str, tuple[str, ...]], ...] = (
     )),
     ("sugerir_adaptacion", (
         "adapta el", "adapta la", "adapta ", "variante adaptada",
-        "modifica el ejercicio",
+        "modifica el ejercicio", "sugerir variante",
     )),
 )
 
 
-# Altas en la plataforma (entrenador): no deben caer en rutina local.
 _ESCRITURAS_PLATAFORMA = (
     "crea un deporte",
     "crear un deporte",
@@ -141,7 +175,7 @@ _ALTA_DEPORTE = re.compile(
 
 
 def extraer_nombre_alta_deporte(mensaje: str) -> str:
-    """Nombre del deporte a dar de alta, p. ej. running en «Crea un deporte de running»."""
+    """Nombre del deporte a dar de alta."""
     texto = normalizar(mensaje)
     if not texto:
         return ""
@@ -174,3 +208,40 @@ def extraer_frecuencia(mensaje: str) -> int:
     if m:
         return max(2, min(5, int(m.group(1))))
     return 3
+
+
+def extraer_umbral_alertas(mensaje: str) -> Optional[int]:
+    """Umbral semanal 1–10 si el usuario lo indica."""
+    texto = normalizar(mensaje)
+    m = re.search(r"umbral(?:\s+de)?(?:\s+alertas)?(?:\s+a|=)?\s*(\d+)", texto)
+    if m:
+        return max(1, min(10, int(m.group(1))))
+    m = re.search(r"(\d+)\s*alertas", texto)
+    if m:
+        return max(1, min(10, int(m.group(1))))
+    m = re.search(r"(?:a|=)\s*(\d+)\b", texto)
+    if m and "umbral" in texto:
+        return max(1, min(10, int(m.group(1))))
+    return None
+
+
+def extraer_horas_silencio(mensaje: str) -> int:
+    """Horas de silencio temporal (1–168), por defecto 24."""
+    texto = normalizar(mensaje)
+    m = re.search(r"(\d+)\s*horas?", texto)
+    if m:
+        return max(1, min(168, int(m.group(1))))
+    m = re.search(r"(\d+)\s*dias?", texto)
+    if m:
+        return max(1, min(168, int(m.group(1)) * 24))
+    return 24
+
+
+def feedback_dificultad(mensaje: str) -> str:
+    """'bajar' | 'subir' | 'mantener' según el feedback del plan."""
+    texto = normalizar(mensaje)
+    if any(p in texto for p in ("dificil", "duro", "pesado", "exigente", "baja la", "bajar")):
+        return "bajar"
+    if any(p in texto for p in ("facil", "suave", "liviano", "sube la", "subir", "progres")):
+        return "subir"
+    return "mantener"
